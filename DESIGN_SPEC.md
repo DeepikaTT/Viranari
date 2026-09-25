@@ -1,23 +1,21 @@
-# ViraNari v0.1 UI Design Spec
+# ViraNari v1.2 design system
 
-The prototype intentionally uses a calm safety palette rather than making the entire app emergency-red.
+Victim-first rule: the emergency screen should be usable with one hand, under stress, with minimal reading.
 
-- Background: `#FFF9FC`
-- Plum primary/text: `#40223D`
-- Muted plum: `#76506F`
-- Lilac panel: `#F0E2F1`
-- Strong lilac: `#D8BDDD`
-- SOS pink: `#E94378`
-- SOS dark: `#C9275E`
-- Confirmed/acknowledged green: `#267A5A`
-- Success background: `#E4F4EC`
+Brand palette:
+- Deep Teal `#073F42`
+- Midnight Teal `#052E31`
+- Lotus Pink `#D95D83`
+- Emergency Red `#D93645`
+- Antique Gold `#C9963B`
+- Warm Ivory `#FFF9F0`
+- Success Green `#23845D`
 
-Interaction principles:
+Emergency hierarchy:
+1. Active emergency state / SOS control
+2. Delivery + acknowledgement state
+3. Latest location + trusted-contact response
+4. Battery/network/retry status
+5. Secondary history/settings
 
-- The SOS control dominates the Home screen.
-- SOS requires a long press and produces haptic confirmation.
-- Emergency status uses explicit text: Sent → Delivered → Acknowledged.
-- Green is reserved for server-confirmed success states.
-- The app never equates “request submitted” with “help notified.”
-- Trusted-contact enrollment is consent-based rather than silently adding a phone/email.
-- Large controls and readable status labels support stressful, low-attention usage.
+The UI intentionally avoids dense menus during an active SOS.

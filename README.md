@@ -1,62 +1,57 @@
-# ViraNari v0.1 — Working Hackathon Prototype
+# ViraNari v1.2 — victim-first emergency-response prototype
 
-ViraNari v0.1 is an Android-first Flutter app plus FastAPI backend built around one end-to-end promise: an SOS is not called **delivered** until a trusted contact app retrieves it, and is not called **acknowledged** until that trusted contact explicitly confirms it.
+ViraNari v1.2 is the continuation of v0.1 through the v1.1/v1.2 milestone. The demo is designed around one principle: **during danger, the user should make as few decisions as possible.**
 
-## What is implemented now
+## What works now
 
-- Account registration/login with Argon2 password hashing and signed access tokens.
-- Consent-based Trusted Circle: the recipient must already have an account and explicitly accept an invite code.
-- Real GPS capture on SOS using the phone location service.
-- Press-and-hold SOS with haptic confirmation to reduce accidental triggers.
-- Persistent backend emergency records in SQLite/WAL mode.
-- Idempotent SOS creation so retries cannot create duplicate emergencies.
-- Encrypted-at-rest local retry queue using Android/iOS secure storage.
-- Timeout reconciliation: before retrying an uncertain POST, the app checks whether the server already received the same idempotency key.
-- Trusted-contact emergency inbox while the app is open.
-- Delivery receipt when the trusted contact inbox retrieves the alert.
-- Explicit trusted-contact acknowledgement, visible to the sender.
-- SOS history with sent/delivered/acknowledged state.
-- Contact removal: removed contacts do not receive future SOS events.
-- 10 backend tests covering authentication, consent, retries, access control, acknowledgement, removal, and persistence.
+### V1 core
+- Secure register/login (Argon2 password hashing + signed bearer tokens)
+- Consent-based Trusted Circle invitations
+- Press-and-hold SOS with haptic feedback
+- Real GPS capture
+- Persistent emergency records
+- SENT → DELIVERED → ACKNOWLEDGED delivery states
+- Recipient Emergency Inbox
+- Offline encrypted retry queue with idempotency protection
+- SOS history and contact removal
 
-## Deliberately not faked in v0.1
+### V1.1 reliability + UX
+- Brand refresh: deep teal, lotus pink, antique gold, warm ivory
+- Connectivity and backend-reachability status
+- Battery percentage + low-battery warning
+- Better emergency-state dashboard
+- Immediate SOS activation; false-alarm cancellation does **not** delay a real alert
+- Practice/Test mode with clear TEST labels
+- Error/retry UX
+- Backend audit events
+- Simple per-user request throttling for SOS/location update endpoints
+- Updated fish scripts with proper error handling
 
-BLE mesh, background push notifications, offline maps, and compass navigation are **not** represented as working features yet. They are the next milestones. The current build is honest and demonstrable end-to-end.
+### V1.2 live emergency session
+- One active emergency session restored after app restart
+- Live location stream during an active emergency
+- Android foreground location notification so live tracking can continue when the sender app moves to the background, subject to OS permissions/power policy
+- Latest location, battery, and network state sent to backend
+- Location timeline stored on the server
+- Trusted-contact inbox auto-refreshes every 5 seconds while app is running
+- Multiple trusted contacts receive the same SOS
+- Recipient acknowledgement visible to sender
+- Recipient can open latest coordinates in installed Maps app
+- "I'm safe — end emergency" state
+- "Cancel false alarm" state retained in audit/history
 
-## Architecture
+## Important external integration not falsely claimed
 
-```text
-Flutter Android app
-  ├─ real GPS
-  ├─ secure session token
-  ├─ secure offline SOS queue
-  ├─ Trusted Circle
-  ├─ emergency inbox
-  └─ SOS history
-          │ HTTPS/HTTP in local demo
-          ▼
-FastAPI API
-  ├─ auth
-  ├─ trusted-contact consent
-  ├─ idempotent emergency creation
-  ├─ delivery receipts
-  ├─ acknowledgement
-  └─ SQLite persistence
-```
+True **background recipient push notifications** require a configured push provider (Firebase Cloud Messaging for Android and APNs/Firebase for iOS) plus project credentials. This source intentionally does not pretend push is working without those credentials. The current recipient app auto-refreshes while running; push is the next production integration.
 
-## 1. Start the backend on Arch + fish
+## Run on Arch + fish
 
-From the extracted project root:
+### Terminal 1 — backend
 
 ```fish
+cd viranari_v1_2
 ./scripts/setup_backend.fish
 ./scripts/run_backend.fish
-```
-
-The backend listens on:
-
-```text
-http://0.0.0.0:8000
 ```
 
 Health check:
@@ -65,116 +60,59 @@ Health check:
 curl http://127.0.0.1:8000/health
 ```
 
-Swagger UI is available locally at `/docs`.
+Swagger:
 
-## 2. Generate Flutter Android/iOS wrappers
+`http://127.0.0.1:8000/docs`
 
-The source package intentionally keeps generated platform wrappers out of the archive so your installed Flutter 3.47.5 creates wrappers that match your machine.
+Run backend tests:
 
 ```fish
-./scripts/prepare_mobile.fish
+./scripts/test_backend.fish
 ```
 
-This command:
-
-1. runs `flutter create` for Android and iOS,
-2. restores the ViraNari source files,
-3. adds Android INTERNET + location permissions,
-4. enables cleartext HTTP only for local hackathon development,
-5. adds the iOS location usage description,
-6. runs `flutter pub get`.
-
-## 3. Run on your Android emulator
-
-Your Android emulator reaches the host computer through `10.0.2.2`:
+### Terminal 2 — mobile
 
 ```fish
+cd viranari_v1_2
+./scripts/prepare_mobile.fish
+flutter emulators
+flutter emulators --launch Pixel_7
 cd mobile
-flutter devices
 flutter run --dart-define=VIRANARI_API_BASE=http://10.0.2.2:8000
 ```
 
-The default in the source is already `http://10.0.2.2:8000`, so plain `flutter run` also works for the standard Android emulator.
-
-## 4. Run on a physical Android phone
-
-The phone and laptop must be on the same network. Find the laptop LAN address, for example:
-
-```fish
-ip -br addr
-```
-
-If the laptop address is `192.168.1.50`, run:
+For a physical Android phone, `10.0.2.2` will not point to the laptop. Put both devices on the same Wi-Fi and run with your laptop LAN IP, for example:
 
 ```fish
 flutter run --dart-define=VIRANARI_API_BASE=http://192.168.1.50:8000
 ```
 
-Do not use `10.0.2.2` on a physical phone; that special address is for the Android emulator.
+The backend already listens on `0.0.0.0:8000`.
 
-## 5. Exact two-account demo flow
+## Demo flow
 
-Use two accounts so the delivery/acknowledgement story is real.
+1. Register Person A and Person B.
+2. A invites B from Trusted Circle; B accepts the consent code.
+3. A holds SOS.
+4. A's GPS + battery + network state are recorded; the emergency becomes ACTIVE immediately.
+5. B's Inbox sees the alert (auto-refresh while app is running) and can open the latest point in Maps.
+6. Move A's emulator GPS or physical phone; new live points are added to the server timeline.
+7. B acknowledges the alert.
+8. A sees acknowledgement count update.
+9. A uses **I'm safe — end emergency** when safe.
+10. Repeat in Practice Mode for a judge-safe test alert.
 
-**Phone/emulator A — person sending SOS**
+## Database
 
-1. Create `asha@example.com`.
-2. Open Trusted Circle → Invite.
-3. Enter the registered email of Phone B.
-4. Copy the generated consent code.
+The run script uses `backend/data/viranari_v12.db`, intentionally separate from v0.1 so an old prototype database cannot break the new v1.2 schema.
 
-**Phone/emulator B — trusted contact**
+## Safety engineering choices
 
-1. Create `maya@example.com`.
-2. Open Trusted Circle → Accept code.
-3. Paste the code from A.
+- No pre-SOS countdown: accidental triggers can be cancelled **after** the alert is created, so help is never delayed by a timer.
+- No fake "message delivered" state: delivery is recorded only when the recipient inbox retrieves the alert.
+- No fake push notification claim without Firebase/APNs credentials.
+- Location sharing is scoped to active emergency sessions rather than permanent tracking.
+- Trusted contacts require consent.
+- Practice alerts are visibly labelled TEST.
 
-**Emergency demo**
-
-1. On A, press and hold the SOS button.
-2. Allow location permission.
-3. A shows **Sent** — not Delivered yet.
-4. On B, open Emergency Inbox / pull to refresh.
-5. A can refresh and now shows **Delivered**.
-6. On B, tap **I received this — acknowledge**.
-7. Refresh A; status becomes **Acknowledged**.
-
-That state transition is a strong judging point because the UI does not falsely claim that a contact was notified.
-
-## 6. Offline retry demo
-
-1. Keep A signed in and with an active trusted contact.
-2. Stop the backend or disconnect the phone from the network.
-3. Trigger SOS after GPS is obtained.
-4. The encrypted local queue records the attempt.
-5. Restore connectivity/backend.
-6. Pull-to-refresh Home or reopen the Home screen.
-7. ViraNari first reconciles the idempotency key and then safely retries only if the server does not already have that SOS.
-
-This handles the difficult case where the phone timed out even though the server may have accepted the original request.
-
-## 7. Run backend tests
-
-```fish
-cd backend
-source .venv/bin/activate.fish
-PYTHONPATH=. pytest -q
-```
-
-Expected:
-
-```text
-10 passed
-```
-
-## Development-only security note
-
-`android:usesCleartextTraffic="true"` is inserted only to make laptop-to-phone local HTTP testing simple. For a deployed build, put the API behind HTTPS and remove cleartext traffic. Replace `VIRANARI_JWT_SECRET` with a random long secret before any public deployment.
-
-## v0.2 priority after this works on two phones
-
-1. BLE peer discovery and one-hop encrypted SOS relay on two physical Android phones.
-2. Background notification delivery (FCM/APNs) so the trusted contact does not need the inbox open.
-3. Offline cached safe-location data and Safety Compass.
-4. Multi-hop store-and-forward packet TTL, replay protection, rotating node IDs.
-5. On-device multilingual intent commands only after the emergency transport path is stable.
+See `VICTIM_FIRST_ROADMAP.md` for the next safety-network ideas.

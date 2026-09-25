@@ -1,7 +1,7 @@
 name: viranari_app
-description: ViraNari offline-aware women safety hackathon prototype.
+description: ViraNari v1.2 emergency-response prototype with live SOS sessions.
 publish_to: 'none'
-version: 0.1.0+1
+version: 1.2.0+12
 
 environment:
   sdk: '>=3.13.0 <4.0.0'
@@ -15,6 +15,9 @@ dependencies:
   flutter_secure_storage: ^9.2.4
   uuid: ^4.5.1
   intl: ^0.20.2
+  battery_plus: ^7.1.1
+  connectivity_plus: ^7.3.1
+  url_launcher: ^6.3.2
 
 dev_dependencies:
   flutter_test:

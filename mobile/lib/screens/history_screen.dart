@@ -40,10 +40,12 @@ class _HistoryScreenState extends State<HistoryScreen> {
     }
   }
 
-  Color _stateColor(String state) {
-    if (state == 'Acknowledged') return ViraColors.success;
-    if (state == 'Delivered') return ViraColors.warning;
-    return ViraColors.plum;
+  Color _stateColor(AlertRecord alert) {
+    if (alert.state == 'resolved') return ViraColors.success;
+    if (alert.state == 'cancelled') return ViraColors.mutedPlum;
+    if (alert.deliveryState == 'Acknowledged') return ViraColors.success;
+    if (alert.deliveryState == 'Delivered') return ViraColors.warning;
+    return ViraColors.pinkDark;
   }
 
   @override
@@ -55,7 +57,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
         children: [
           Text('SOS History', style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w900, color: ViraColors.plum)),
           const SizedBox(height: 6),
-          const Text('Persistent server records and delivery receipts.', style: TextStyle(color: ViraColors.mutedPlum)),
+          const Text('Persistent emergency sessions, latest location and delivery receipts.', style: TextStyle(color: ViraColors.mutedPlum)),
           const SizedBox(height: 18),
           if (_loading)
             const Center(child: Padding(padding: EdgeInsets.all(30), child: CircularProgressIndicator()))
@@ -73,7 +75,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Container(width: 10, height: 46, decoration: BoxDecoration(color: _stateColor(a.deliveryState), borderRadius: BorderRadius.circular(99))),
+                      Container(width: 10, height: 56, decoration: BoxDecoration(color: _stateColor(a), borderRadius: BorderRadius.circular(99))),
                       const SizedBox(width: 12),
                       Expanded(
                         child: Column(
@@ -81,13 +83,14 @@ class _HistoryScreenState extends State<HistoryScreen> {
                           children: [
                             Row(
                               children: [
-                                Expanded(child: Text(a.deliveryState, style: TextStyle(fontWeight: FontWeight.w900, color: _stateColor(a.deliveryState)))),
+                                Expanded(child: Text('${a.state.toUpperCase()} · ${a.deliveryState}', style: TextStyle(fontWeight: FontWeight.w900, color: _stateColor(a)))),
                                 Text(DateFormat('dd MMM, h:mm a').format(a.createdAt.toLocal()), style: const TextStyle(color: ViraColors.mutedPlum, fontSize: 12)),
                               ],
                             ),
                             const SizedBox(height: 5),
                             Text('${a.latitude.toStringAsFixed(5)}, ${a.longitude.toStringAsFixed(5)}'),
-                            Text('${a.recipients.length} trusted contact${a.recipients.length == 1 ? '' : 's'}', style: const TextStyle(color: ViraColors.mutedPlum)),
+                            const SizedBox(height: 2),
+                            Text('${a.acknowledgedCount}/${a.recipients.length} acknowledged · last update ${DateFormat('h:mm:ss a').format(a.updatedAt.toLocal())}', style: const TextStyle(color: ViraColors.mutedPlum, fontSize: 12)),
                           ],
                         ),
                       ),

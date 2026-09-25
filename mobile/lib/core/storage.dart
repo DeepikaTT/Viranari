@@ -14,7 +14,7 @@ class SessionStore {
 }
 
 class QueueStore {
-  static const _key = 'viranari_pending_alerts_v1';
+  static const _key = 'viranari_pending_alerts_v12';
   final FlutterSecureStorage _secure = const FlutterSecureStorage();
 
   Future<List<QueuedAlert>> load() async {

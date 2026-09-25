@@ -1,2 +1,26 @@
-..........                                                               [100%]
-10 passed in 1.35s
+ViraNari v1.2 backend validation
+================================
+17 tests passed.
+
+Covered:
+- account registration/login
+- duplicate email rejection
+- consent-based trusted contacts
+- idempotent SOS creation
+- server-confirmed inbox delivery
+- recipient acknowledgement
+- access control
+- removed-contact behavior
+- live location updates
+- recipient visibility of latest location/battery/network
+- location timeline persistence
+- active emergency restoration endpoint
+- safe resolution
+- false-alarm cancellation
+- post-cancel location rejection
+- owner-only session termination
+- database persistence across app restart
+- TEST drill labelling
+- multi-recipient SOS fan-out
+
+Flutter source was reviewed against current package APIs, but this build environment does not contain Flutter itself. Run `flutter analyze` and `flutter run` on the user's configured Arch/Flutter machine before claiming the Android APK itself is validated.

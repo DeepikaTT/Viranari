@@ -54,7 +54,26 @@ class AlertCreateIn(BaseModel):
     longitude: float = Field(ge=-180, le=180)
     accuracy_m: float | None = Field(default=None, ge=0)
     battery_percent: int | None = Field(default=None, ge=0, le=100)
+    network_state: str | None = Field(default=None, max_length=40)
+    is_test: bool = False
     note: str | None = Field(default=None, max_length=500)
+
+
+class AlertLocationIn(BaseModel):
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    accuracy_m: float | None = Field(default=None, ge=0)
+    battery_percent: int | None = Field(default=None, ge=0, le=100)
+    network_state: str | None = Field(default=None, max_length=40)
+
+
+class AlertLocationOut(BaseModel):
+    latitude: float
+    longitude: float
+    accuracy_m: float | None
+    battery_percent: int | None
+    network_state: str | None
+    recorded_at: datetime
 
 
 class RecipientStatusOut(BaseModel):
@@ -73,9 +92,14 @@ class AlertOut(BaseModel):
     longitude: float
     accuracy_m: float | None
     battery_percent: int | None
+    network_state: str | None
+    is_test: bool
     note: str | None
+    state: str
     created_at: datetime
+    updated_at: datetime
     cancelled_at: datetime | None
+    resolved_at: datetime | None
     recipients: list[RecipientStatusOut]
 
 
@@ -86,11 +110,23 @@ class InboxAlertOut(BaseModel):
     latitude: float
     longitude: float
     accuracy_m: float | None
+    battery_percent: int | None
+    network_state: str | None
+    is_test: bool
+    state: str
     note: str | None
     created_at: datetime
+    updated_at: datetime
     delivered_at: datetime | None
     acknowledged_at: datetime | None
 
 
 class MessageOut(BaseModel):
     message: str
+
+
+class AuditEventOut(BaseModel):
+    event_type: str
+    resource_id: str | None
+    detail: str | None
+    created_at: datetime

@@ -20,7 +20,7 @@ class ApiClient {
       : baseUrl = baseUrl ??
             const String.fromEnvironment(
               'VIRANARI_API_BASE',
-              defaultValue: 'http://200.141.11.175:3000',
+              defaultValue: 'http://10.0.2.2:8000',
             );
 
   final String baseUrl;
@@ -67,9 +67,24 @@ class ApiClient {
   }
 
   Future<dynamic> _delete(String path) async {
-    final r = await http.delete(Uri.parse('$baseUrl$path'), headers: _headers).timeout(const Duration(seconds: 8));
-    if (r.statusCode < 200 || r.statusCode >= 300) _throw(r);
-    return jsonDecode(r.body);
+    try {
+      final r = await http.delete(Uri.parse('$baseUrl$path'), headers: _headers).timeout(const Duration(seconds: 8));
+      if (r.statusCode < 200 || r.statusCode >= 300) _throw(r);
+      return jsonDecode(r.body);
+    } on SocketException {
+      throw ApiException('No network connection');
+    } on TimeoutException {
+      throw ApiException('Server response timed out');
+    }
+  }
+
+  Future<bool> health() async {
+    try {
+      final r = await http.get(Uri.parse('$baseUrl/health')).timeout(const Duration(seconds: 3));
+      return r.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
   }
 
   Future<({String token, UserProfile user})> register(String name, String email, String password) async {
@@ -110,10 +125,48 @@ class ApiClient {
     }
   }
 
+  Future<AlertRecord?> activeAlert() async {
+    try {
+      return AlertRecord.fromJson(await _get('/alerts/active') as Map<String, dynamic>);
+    } on ApiException catch (e) {
+      if (e.statusCode == 404) return null;
+      rethrow;
+    }
+  }
+
   Future<List<AlertRecord>> history() async =>
       (await _get('/alerts/history') as List<dynamic>).map((e) => AlertRecord.fromJson(e as Map<String, dynamic>)).toList();
 
   Future<AlertRecord> getAlert(String id) async => AlertRecord.fromJson(await _get('/alerts/detail/$id') as Map<String, dynamic>);
+
+  Future<AlertRecord> updateLocation(
+    String alertId, {
+    required double latitude,
+    required double longitude,
+    double? accuracyM,
+    int? batteryPercent,
+    String? networkState,
+  }) async =>
+      AlertRecord.fromJson(
+        await _post('/alerts/$alertId/location', {
+          'latitude': latitude,
+          'longitude': longitude,
+          'accuracy_m': accuracyM,
+          'battery_percent': batteryPercent,
+          'network_state': networkState,
+        }),
+      );
+
+  Future<List<AlertLocationPoint>> locations(String alertId) async =>
+      (await _get('/alerts/$alertId/locations') as List<dynamic>)
+          .map((e) => AlertLocationPoint.fromJson(e as Map<String, dynamic>))
+          .toList();
+
+  Future<AlertRecord> resolveAlert(String alertId) async =>
+      AlertRecord.fromJson(await _post('/alerts/$alertId/resolve', const {}));
+
+  Future<AlertRecord> cancelAlert(String alertId) async =>
+      AlertRecord.fromJson(await _post('/alerts/$alertId/cancel', const {}));
 
   Future<List<InboxAlert>> inbox() async =>
       (await _get('/alerts/inbox') as List<dynamic>).map((e) => InboxAlert.fromJson(e as Map<String, dynamic>)).toList();

@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -18,6 +18,12 @@ class ContactStatus(str, Enum):
     pending = "pending"
     active = "active"
     removed = "removed"
+
+
+class AlertState(str, Enum):
+    active = "active"
+    cancelled = "cancelled"
+    resolved = "resolved"
 
 
 class User(Base):
@@ -55,13 +61,21 @@ class Alert(Base):
     latitude: Mapped[float] = mapped_column(Float)
     longitude: Mapped[float] = mapped_column(Float)
     accuracy_m: Mapped[float | None] = mapped_column(Float, nullable=True)
-    battery_percent: Mapped[int | None] = mapped_column(nullable=True)
+    battery_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    network_state: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    is_test: Mapped[bool] = mapped_column(Boolean, default=False)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    state: Mapped[str] = mapped_column(String(20), default=AlertState.active.value, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     recipients: Mapped[list["AlertRecipient"]] = relationship(
         back_populates="alert", cascade="all, delete-orphan"
+    )
+    locations: Mapped[list["AlertLocation"]] = relationship(
+        back_populates="alert", cascade="all, delete-orphan", order_by="AlertLocation.recorded_at"
     )
 
 
@@ -77,3 +91,29 @@ class AlertRecipient(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     alert: Mapped[Alert] = relationship(back_populates="recipients")
+
+
+class AlertLocation(Base):
+    __tablename__ = "alert_locations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    alert_id: Mapped[str] = mapped_column(ForeignKey("alerts.id", ondelete="CASCADE"), index=True)
+    latitude: Mapped[float] = mapped_column(Float)
+    longitude: Mapped[float] = mapped_column(Float)
+    accuracy_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    battery_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    network_state: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+    alert: Mapped[Alert] = relationship(back_populates="locations")
+
+
+class AuditEvent(Base):
+    __tablename__ = "audit_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    actor_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    event_type: Mapped[str] = mapped_column(String(60), index=True)
+    resource_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
