@@ -21,7 +21,9 @@ class InboxScreen extends StatefulWidget {
 
 class _InboxScreenState extends State<InboxScreen> {
   List<InboxAlert> _items = const [];
+  List<JourneyRecord> _journeys = const [];
   bool _loading = true;
+  bool _polling = false;
   bool _firstLoad = true;
   String? _error;
   Timer? _pollTimer;
@@ -31,7 +33,7 @@ class _InboxScreenState extends State<InboxScreen> {
   void initState() {
     super.initState();
     _load();
-    _pollTimer = Timer.periodic(const Duration(seconds: 3), (_) => _load(silent: true));
+    _pollTimer = Timer.periodic(const Duration(seconds: 4), (_) => _load(silent: true));
   }
 
   @override
@@ -41,35 +43,63 @@ class _InboxScreenState extends State<InboxScreen> {
   }
 
   Future<void> _load({bool silent = false}) async {
-    if (!silent && mounted) {
-      setState(() {
-        _loading = true;
-        _error = null;
-      });
-    }
+    if (_polling) return;
+    _polling = true;
+    if (!silent && mounted) setState(() { _loading = true; _error = null; });
     try {
-      final data = await widget.session.api.inbox();
+      final values = await Future.wait([widget.session.api.inbox(), widget.session.api.journeyInbox()]);
+      final data = values[0] as List<InboxAlert>;
+      final journeys = values[1] as List<JourneyRecord>;
       final newActive = data.where((a) => a.isActive && !_knownIds.contains(a.alertId)).toList();
       final previousIds = _knownIds;
       _knownIds = data.map((e) => e.alertId).toSet();
-      if (mounted) setState(() => _items = data);
+      if (mounted) setState(() { _items = data; _journeys = journeys; });
 
       if (!_firstLoad && previousIds.isNotEmpty && newActive.isNotEmpty && mounted) {
         final newest = newActive.first;
         await (newest.isTest ? HapticFeedback.selectionClick() : HapticFeedback.heavyImpact());
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            duration: const Duration(seconds: 6),
-            content: Text(newest.isTest ? 'TEST DRILL from ${newest.senderName}.' : 'Emergency: ${newest.senderName} needs help. Open Live Track.'),
-          ),
+          SnackBar(content: Text(newest.isTest ? 'TEST DRILL from ${newest.senderName}.' : 'Emergency: ${newest.senderName} needs help.')),
         );
       }
       _firstLoad = false;
     } on ApiException catch (e) {
       if (mounted && !silent) setState(() => _error = e.message);
     } finally {
+      _polling = false;
       if (mounted && !silent) setState(() => _loading = false);
     }
+  }
+
+  Duration _age(DateTime? time) {
+    if (time == null) return const Duration(days: 365);
+    final d = DateTime.now().difference(time.toLocal());
+    return d.isNegative ? Duration.zero : d;
+  }
+
+  String _deviceState(InboxAlert item) {
+    if (!item.isActive) return item.state.toUpperCase();
+    final age = _age(item.lastDeviceSeenAt ?? item.updatedAt);
+    if (age.inSeconds < 20) return 'LIVE';
+    if (age.inSeconds < 60) return 'DELAYED';
+    return 'OFFLINE';
+  }
+
+  Color _deviceColor(InboxAlert item) {
+    switch (_deviceState(item)) {
+      case 'LIVE': return ViraColors.success;
+      case 'DELAYED': return ViraColors.warning;
+      case 'OFFLINE': return ViraColors.pinkDark;
+      default: return ViraColors.mutedPlum;
+    }
+  }
+
+  String _ageText(DateTime? time) {
+    final age = _age(time);
+    if (age.inSeconds < 10) return 'just now';
+    if (age.inSeconds < 60) return '${age.inSeconds}s ago';
+    if (age.inMinutes < 60) return '${age.inMinutes}m ago';
+    return '${age.inHours}h ago';
   }
 
   Future<void> _ack(InboxAlert item) async {
@@ -77,162 +107,84 @@ class _InboxScreenState extends State<InboxScreen> {
     await HapticFeedback.mediumImpact();
     await _load();
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Acknowledgement sent. Do not confront danger alone; bring help or contact emergency services.')),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('The sender can now see that you are responding.')));
     }
   }
 
-  Future<void> _openExternalMap(InboxAlert item) async {
+  Future<void> _map(InboxAlert item) async {
     final uri = Uri.parse('geo:${item.latitude},${item.longitude}?q=${item.latitude},${item.longitude}(ViraNari%20SOS)');
-    if (!await launchUrl(uri, mode: LaunchMode.externalApplication) && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No map app could open this location.')));
-    }
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
   }
 
-  Future<void> _call(InboxAlert item) async {
-    final phone = item.senderPhoneE164;
+  Future<void> _call(String? phone) async {
     if (phone == null) return;
     await launchUrl(Uri(scheme: 'tel', path: phone), mode: LaunchMode.externalApplication);
   }
 
   Future<void> _track(InboxAlert item) async {
-    await Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => LiveTrackingScreen(session: widget.session, initial: item),
-    ));
+    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => LiveTrackingScreen(session: widget.session, initial: item)));
     await _load();
-  }
-
-  Duration _age(InboxAlert item) {
-    final d = DateTime.now().difference(item.updatedAt.toLocal());
-    return d.isNegative ? Duration.zero : d;
-  }
-
-  String _freshness(InboxAlert item) {
-    final age = _age(item);
-    if (!item.isActive) return item.state.toUpperCase();
-    if (age.inSeconds < 15) return 'LIVE';
-    if (age.inMinutes < 2) return 'DELAYED';
-    return 'LAST SEEN';
-  }
-
-  Color _freshnessColor(InboxAlert item) {
-    final age = _age(item);
-    if (!item.isActive) return ViraColors.mutedPlum;
-    if (age.inSeconds < 15) return ViraColors.success;
-    if (age.inMinutes < 2) return ViraColors.warning;
-    return ViraColors.pinkDark;
-  }
-
-  String _ageText(InboxAlert item) {
-    final age = _age(item);
-    if (age.inSeconds < 10) return 'just now';
-    if (age.inSeconds < 60) return '${age.inSeconds}s ago';
-    if (age.inMinutes < 60) return '${age.inMinutes}m ago';
-    return '${age.inHours}h ago';
-  }
-
-  Color _cardColor(InboxAlert item) {
-    if (item.state == 'cancelled') return ViraColors.lilac;
-    if (item.state == 'resolved') return ViraColors.successSoft;
-    return item.acknowledgedAt != null ? ViraColors.successSoft : ViraColors.dangerSoft;
   }
 
   @override
   Widget build(BuildContext context) {
+    final overdue = _journeys.where((j) => j.overdue).toList();
     return RefreshIndicator(
       onRefresh: _load,
       child: ListView(
-        padding: const EdgeInsets.fromLTRB(20, 18, 20, 110),
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 110),
         children: [
-          Row(children: [
-            Expanded(child: Text('Emergency Inbox', style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w900, color: ViraColors.plum))),
-            const _LiveBadge(),
-          ]),
+          Text('Response', style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w900, color: ViraColors.plum)),
+          const SizedBox(height: 4),
+          const Text('Emergencies and Journey Guard check-ins from people who trust you.', style: TextStyle(color: ViraColors.mutedPlum)),
+          if (overdue.isNotEmpty) ...[
+            const SizedBox(height: 18),
+            Text('Needs attention', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900)),
+            const SizedBox(height: 8),
+            ...overdue.map((j) => _JourneyRow(journey: j, onCall: () => _call(j.ownerPhoneE164))),
+          ],
+          if (_journeys.where((j) => !j.overdue).isNotEmpty) ...[
+            const SizedBox(height: 16),
+            Text('Journey Guard', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900)),
+            const SizedBox(height: 4),
+            ..._journeys.where((j) => !j.overdue).map((j) => _JourneyRow(journey: j, onCall: () => _call(j.ownerPhoneE164))),
+          ],
+          const SizedBox(height: 20),
+          Row(
+            children: [
+              Expanded(child: Text('Emergency alerts', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900))),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                decoration: BoxDecoration(color: ViraColors.successSoft, borderRadius: BorderRadius.circular(99)),
+                child: const Text('AUTO REFRESH', style: TextStyle(fontSize: 9, fontWeight: FontWeight.w900, color: ViraColors.success)),
+              ),
+            ],
+          ),
           const SizedBox(height: 6),
-          const Text('Refreshes every 3 seconds while open. “Last seen” means the device stopped updating; the marker remains at the last reliable point.', style: TextStyle(color: ViraColors.mutedPlum, height: 1.35)),
-          const SizedBox(height: 18),
           if (_loading)
-            const Center(child: Padding(padding: EdgeInsets.all(30), child: CircularProgressIndicator()))
+            const Padding(padding: EdgeInsets.all(28), child: Center(child: CircularProgressIndicator()))
           else if (_error != null)
-            Text(_error!, style: const TextStyle(color: ViraColors.pinkDark))
+            Padding(padding: const EdgeInsets.symmetric(vertical: 16), child: Text(_error!, style: const TextStyle(color: ViraColors.pinkDark)))
           else if (_items.isEmpty)
-            Container(
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(color: ViraColors.lilac, borderRadius: BorderRadius.circular(24)),
-              child: const Column(children: [
-                Icon(Icons.inbox_outlined, size: 44, color: ViraColors.plum),
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 34),
+              child: Column(children: [
+                Icon(Icons.shield_outlined, size: 42, color: ViraColors.mutedPlum),
                 SizedBox(height: 10),
-                Text('No emergency alerts', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 18)),
+                Text('No emergency alerts', style: TextStyle(fontWeight: FontWeight.w900)),
               ]),
             )
           else
-            ..._items.map((item) => Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: Container(
-                    padding: const EdgeInsets.all(17),
-                    decoration: BoxDecoration(color: _cardColor(item), borderRadius: BorderRadius.circular(22)),
-                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Row(children: [
-                        Icon(
-                          item.state == 'resolved'
-                              ? Icons.health_and_safety
-                              : item.state == 'cancelled'
-                                  ? Icons.cancel_outlined
-                                  : item.acknowledgedAt != null
-                                      ? Icons.check_circle
-                                      : Icons.crisis_alert_rounded,
-                          color: item.state == 'resolved' || item.acknowledgedAt != null ? ViraColors.success : item.state == 'cancelled' ? ViraColors.mutedPlum : ViraColors.pinkDark,
-                        ),
-                        const SizedBox(width: 9),
-                        Expanded(child: Text('${item.senderName} ${item.isTest ? 'sent a TEST DRILL' : item.isActive ? 'needs help' : item.state == 'resolved' ? 'is marked safe' : 'cancelled the alert'}', style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 17))),
-                        if (item.isTest) const _TestBadge(),
-                      ]),
-                      const SizedBox(height: 8),
-                      Row(children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                          decoration: BoxDecoration(color: _freshnessColor(item), borderRadius: BorderRadius.circular(99)),
-                          child: Text(_freshness(item), style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w900)),
-                        ),
-                        const SizedBox(width: 8),
-                        Text('${_ageText(item)} · ${DateFormat('h:mm:ss a').format(item.updatedAt.toLocal())}', style: const TextStyle(color: ViraColors.mutedPlum, fontSize: 12)),
-                      ]),
-                      const SizedBox(height: 7),
-                      SelectableText('GPS: ${item.latitude.toStringAsFixed(5)}, ${item.longitude.toStringAsFixed(5)}', style: const TextStyle(fontWeight: FontWeight.w700)),
-                      const SizedBox(height: 5),
-                      Wrap(spacing: 12, runSpacing: 5, children: [
-                        if (item.batteryPercent != null) Text('Battery ${item.batteryPercent}%', style: const TextStyle(color: ViraColors.mutedPlum)),
-                        if (item.networkState != null) Text(item.networkState!.toUpperCase(), style: const TextStyle(color: ViraColors.mutedPlum)),
-                        Text('Started ${DateFormat('dd MMM, h:mm a').format(item.createdAt.toLocal())}', style: const TextStyle(color: ViraColors.mutedPlum)),
-                      ]),
-                      if (item.isActive && _age(item).inMinutes >= 2) ...[
-                        const SizedBox(height: 8),
-                        const Text('⚠ Device connection appears lost. Use this as the last known location.', style: TextStyle(color: ViraColors.pinkDark, fontWeight: FontWeight.w900)),
-                      ],
-                      if (item.note != null) ...[
-                        const SizedBox(height: 5),
-                        Text(item.note!),
-                      ],
-                      const SizedBox(height: 12),
-                      Row(children: [
-                        Expanded(child: FilledButton.icon(onPressed: () => _track(item), icon: const Icon(Icons.my_location), label: const Text('Live Track'))),
-                        const SizedBox(width: 8),
-                        IconButton.filledTonal(onPressed: () => _openExternalMap(item), icon: const Icon(Icons.map_outlined), tooltip: 'Open external map'),
-                        if (item.senderPhoneE164 != null) ...[
-                          const SizedBox(width: 4),
-                          IconButton.filledTonal(onPressed: () => _call(item), icon: const Icon(Icons.call), tooltip: 'Call sender'),
-                        ],
-                      ]),
-                      if (item.isActive) ...[
-                        const SizedBox(height: 8),
-                        if (item.acknowledgedAt == null)
-                          FilledButton.tonalIcon(onPressed: () => _ack(item), icon: const Icon(Icons.volunteer_activism), label: const Text("I'm responding — acknowledge"))
-                        else
-                          const Text('Acknowledged — sender can see that you received this.', style: TextStyle(color: ViraColors.success, fontWeight: FontWeight.w900)),
-                      ],
-                    ]),
-                  ),
+            ..._items.map((item) => _EmergencyRow(
+                  item: item,
+                  state: _deviceState(item),
+                  stateColor: _deviceColor(item),
+                  deviceSeenText: _ageText(item.lastDeviceSeenAt ?? item.updatedAt),
+                  gpsSeenText: _ageText(item.lastGpsFixAt ?? item.updatedAt),
+                  onTrack: () => _track(item),
+                  onMap: () => _map(item),
+                  onCall: item.senderPhoneE164 == null ? null : () => _call(item.senderPhoneE164),
+                  onAck: item.isActive && item.acknowledgedAt == null ? () => _ack(item) : null,
                 )),
         ],
       ),
@@ -240,22 +192,100 @@ class _InboxScreenState extends State<InboxScreen> {
   }
 }
 
-class _TestBadge extends StatelessWidget {
-  const _TestBadge();
+class _EmergencyRow extends StatelessWidget {
+  const _EmergencyRow({
+    required this.item,
+    required this.state,
+    required this.stateColor,
+    required this.deviceSeenText,
+    required this.gpsSeenText,
+    required this.onTrack,
+    required this.onMap,
+    this.onCall,
+    this.onAck,
+  });
+
+  final InboxAlert item;
+  final String state;
+  final Color stateColor;
+  final String deviceSeenText;
+  final String gpsSeenText;
+  final VoidCallback onTrack;
+  final VoidCallback onMap;
+  final VoidCallback? onCall;
+  final VoidCallback? onAck;
+
   @override
   Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-        decoration: BoxDecoration(color: ViraColors.gold, borderRadius: BorderRadius.circular(99)),
-        child: const Text('TEST', style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w900, letterSpacing: .8)),
+        padding: const EdgeInsets.symmetric(vertical: 15),
+        decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: ViraColors.lilacStrong))),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(width: 9, height: 9, decoration: BoxDecoration(shape: BoxShape.circle, color: stateColor)),
+                const SizedBox(width: 9),
+                Expanded(child: Text(item.senderName, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 17))),
+                Text(state, style: TextStyle(fontWeight: FontWeight.w900, color: stateColor, fontSize: 11)),
+              ],
+            ),
+            const SizedBox(height: 5),
+            Text(
+              item.isActive ? 'Phone $deviceSeenText · GPS $gpsSeenText' : '${item.state.toUpperCase()} · ${DateFormat('dd MMM, h:mm a').format(item.updatedAt.toLocal())}',
+              style: const TextStyle(color: ViraColors.mutedPlum),
+            ),
+            if (item.isActive && state == 'OFFLINE') ...[
+              const SizedBox(height: 5),
+              const Text('Connection lost — last known location retained.', style: TextStyle(color: ViraColors.pinkDark, fontWeight: FontWeight.w800)),
+            ],
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                FilledButton.icon(onPressed: onTrack, icon: const Icon(Icons.my_location_rounded), label: const Text('Track')),
+                const SizedBox(width: 7),
+                IconButton.filledTonal(onPressed: onMap, icon: const Icon(Icons.map_outlined), tooltip: 'Open map'),
+                if (onCall != null) ...[
+                  const SizedBox(width: 4),
+                  IconButton.filledTonal(onPressed: onCall, icon: const Icon(Icons.call_rounded), tooltip: 'Call'),
+                ],
+                const Spacer(),
+                if (onAck != null) TextButton(onPressed: onAck, child: const Text("I'm responding")),
+              ],
+            ),
+          ],
+        ),
       );
 }
 
-class _LiveBadge extends StatelessWidget {
-  const _LiveBadge();
+class _JourneyRow extends StatelessWidget {
+  const _JourneyRow({required this.journey, required this.onCall});
+  final JourneyRecord journey;
+  final VoidCallback onCall;
+
   @override
-  Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
-        decoration: BoxDecoration(color: ViraColors.pinkDark, borderRadius: BorderRadius.circular(99)),
-        child: const Text('LIVE', style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w900, letterSpacing: .8)),
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 7),
+        child: Row(
+          children: [
+            Icon(journey.overdue ? Icons.timer_off_rounded : Icons.route_rounded, color: journey.overdue ? ViraColors.pinkDark : ViraColors.success),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('${journey.ownerName} → ${journey.destinationLabel}', style: const TextStyle(fontWeight: FontWeight.w900)),
+                  Text(
+                    journey.overdue
+                        ? 'Overdue since ${DateFormat('h:mm a').format(journey.expectedArrivalAt.toLocal())}'
+                        : 'Expected ${DateFormat('h:mm a').format(journey.expectedArrivalAt.toLocal())}',
+                    style: TextStyle(color: journey.overdue ? ViraColors.pinkDark : ViraColors.mutedPlum),
+                  ),
+                ],
+              ),
+            ),
+            if (journey.ownerPhoneE164 != null) IconButton(onPressed: onCall, icon: const Icon(Icons.call_outlined)),
+          ],
+        ),
       );
 }

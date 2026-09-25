@@ -1,27 +1,35 @@
-# ViraNari v1.3 design system
+# ViraNari V1.4 UI Direction
 
-Victim-first rule: an emergency flow must remain usable one-handed, under stress, with minimal reading and no transport/network choices forced on the victim.
+## Goal
 
-Brand palette:
-- Deep Teal `#073F42`
-- Midnight Teal `#052E31`
-- Lotus Pink `#D95D83`
-- Emergency Red `#D93645`
-- Antique Gold `#C9963B`
-- Warm Ivory `#FFF9F0`
-- Success Green `#23845D`
+Reduce cognitive load and remove the “dashboard full of cards” feeling.
 
-Emergency hierarchy:
-1. SOS / active emergency state
-2. Last known victim position and freshness (LIVE / DELAYED / LAST SEEN)
-3. Delivery + human acknowledgement
-4. Phone GPS fix vs server-sync health
-5. Battery/network/SMS fallback state
-6. Secondary settings/history
+## Home hierarchy
 
-Safety rules:
-- Never remove a victim marker because connectivity disappeared; preserve the last known position.
-- Never label an SMS as delivered when the app only knows it was dispatched.
-- Never expose a Trusted Circle phone number before consent.
-- Never make the victim choose Internet vs SMS; fallback is automatic after preparation.
-- Never delay SOS transmission with a decorative countdown.
+1. small title + settings icon
+2. one compact connectivity strip
+3. large central SOS
+4. emergency status only when active
+5. Journey Guard strip only when active
+6. three compact quick actions
+7. diagnostics collapsed under “Technical status”
+
+## Visual language
+
+- warm ivory background `#FFF9F0`
+- deep teal `#073F42`
+- lotus pink `#D95D83`
+- emergency red/pink `#D93645`
+- success green `#23845D`
+- antique gold `#C9963B`
+- use large empty areas around SOS
+- avoid stacking bordered cards for every metric
+- use flat list rows + dividers in Circle, Response and History
+- use the map as the primary surface in Live Track
+
+## Emergency semantics
+
+- LIVE refers to recent device heartbeat, not movement.
+- GPS age is displayed separately.
+- OFFLINE never deletes the last reliable marker.
+- Practice/test modes must be visibly labelled.

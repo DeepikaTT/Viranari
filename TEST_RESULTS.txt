@@ -1,34 +1,31 @@
-ViraNari v1.3 validation
-========================
+ViraNari V1.4 backend validation
+================================
 
-Backend test suite executed in the build environment:
-22 passed in 4.06s
+Command:
+  python -m pytest -q
+
+Result:
+  33 passed
 
 Coverage includes:
-- authentication
-- Trusted Circle consent
+- registration/authentication
+- Trusted Circle consent/privacy
 - idempotent SOS
-- delivery acknowledgement
-- access control
-- contact removal
-- live location updates
-- persistent location timeline
-- active / resolved / cancelled session states
-- restart persistence
-- practice alerts
-- multiple trusted recipients
-- E.164 phone registration/update
-- phone privacy until consent
-- sender phone exposure to accepted responder
-- speed / heading persistence
-- timezone-aware UTC API output
-- automatic upgrade of an older SQLite schema
+- delivery and acknowledgement
+- live location and timeline
+- persistence/restarts
+- SMS-ready phone fields
+- offline location batch timestamps
+- V1/V1.2/V1.3 schema upgrades
+- heartbeat liveness without fake GPS samples
+- liveness timestamps in responder inbox
+- privacy-preserving Safety Presence
+- presence disable behavior
+- Journey Guard visibility, ownership and overdue derivation
+- create_app upgrade order for old schemas
 
-Flutter source could not be compiled in this build container because Flutter SDK is not installed here.
-Run locally on the configured Arch workstation:
-
+Flutter SDK is not installed in the packaging environment. Run on the Arch development machine:
   ./scripts/prepare_mobile.fish
   cd mobile
   flutter analyze
-  flutter test
-  flutter run --dart-define=VIRANARI_API_BASE=<your API>
+  flutter run ...

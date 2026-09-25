@@ -1,35 +1,37 @@
-# ViraNari v1.3 demo checklist
+# ViraNari V1.4 Demo Checklist
 
-## Before demo
-- [ ] Backend `/health` returns v1.3.0.
-- [ ] Sender and responder accounts have E.164 phone numbers.
-- [ ] Trusted Circle invitation accepted.
-- [ ] Sender opened Circle once to cache trusted phone numbers.
-- [ ] Android SMS permission prepared if demonstrating SMS fallback.
-- [ ] Sender location permission granted.
-- [ ] Responder has internet for the live map tiles.
+## Before judges arrive
 
-## Demo A — live tracking
-1. Sender holds SOS.
-2. Sender Home shows phone GPS fix and server sync timestamps changing.
-3. Responder opens Inbox → Live Track.
-4. Change sender emulator GPS / physically move phone.
-5. Marker moves and trail grows.
-6. Responder acknowledges; sender sees acknowledgement count.
+- [ ] HTTPS backend reachable
+- [ ] `/health` returns 1.4.0
+- [ ] two Android accounts prepared
+- [ ] Trusted Circle accepted
+- [ ] phone numbers in E.164 format
+- [ ] sender GPS permission granted
+- [ ] background location allowed where possible
+- [ ] SMS fallback prepared on physical Android phone
+- [ ] real TEST SMS verified on team devices
+- [ ] Practice Mode OFF for transport test; ON for safe stage demos
 
-## Demo B — Last Seen
-1. Keep SOS active.
-2. Disconnect sender internet.
-3. Sender continues GPS collection and queues points.
-4. Responder retains the last known marker.
-5. Freshness transitions LIVE → DELAYED → LAST SEEN.
-6. Restore internet and confirm queued points sync.
+## 90-second demo
 
-## Demo C — SMS fallback (Android team devices only)
-1. Ensure SMS fallback was prepared before starting.
-2. Stop backend / disable mobile data while cellular SMS service remains available.
-3. Trigger a non-Practice SOS on a controlled test phone.
-4. SOS is queued locally and an SMS is dispatched to cached trusted numbers.
-5. Restore internet and let the API queue reconcile.
+1. Show the clean Home screen: status strip + SOS, no feature-card wall.
+2. Start Journey Guard for “Hostel — 30 min”.
+3. Press-and-hold SOS on sender.
+4. Responder opens Response → Track.
+5. Show LIVE based on **device heartbeat**, plus separate GPS age.
+6. Keep sender stationary: LIVE should remain LIVE.
+7. Move sender/emulator GPS: marker, trail, direction and distance travelled change.
+8. Disable sender data: responder transitions to DELAYED/OFFLINE but retains marker.
+9. Sender continues collecting GPS locally; SMS fallback may fire once.
+10. Restore data: heartbeat and queued trail reconcile; responder returns to LIVE.
+11. Open Nearby to show anonymous Safety Presence radar.
 
-Never demonstrate a real emergency message to an uninvolved person.
+## Never claim as implemented
+
+- BLE/multi-hop ViraMesh
+- police dispatch integration
+- certified emergency response
+- push notifications while the recipient app is completely inactive
+- offline map tiles
+- verified Safe Node partnership network

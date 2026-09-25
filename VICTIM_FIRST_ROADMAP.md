@@ -1,16 +1,23 @@
-# ViraNari — victim-first roadmap after v1.3
+# Victim-first roadmap after V1.4
 
-v1.3 focuses on one question: **can trusted people keep finding the victim even when connectivity becomes unreliable?**
+V1.4 deliberately prioritises reliability and low cognitive load before adding more experimental intelligence.
 
-Next priorities:
+## Next: V1.5
 
-1. **Safety Presence** — anonymous nearby ViraNari device counts / approximate proximity, never a public exact people map.
-2. **Journey Guard** — expected destination/arrival, route deviation and missed-arrival safety checks.
-3. **Silent/stealth SOS** — preconfigured discreet trigger and vibration-only confirmation where platform rules permit.
-4. **Verified Safe Nodes** — staffed pharmacies, campus gates, hospitals, hostel desks and participating public locations.
-5. **ViraMesh** — BLE phone-to-phone emergency relay, encrypted packets, rotating IDs, TTL and duplicate suppression.
-6. **Push notifications** — Firebase/APNs delivery so responders are alerted while the app is backgrounded.
-7. **Offline maps / Safety Compass** — cached safe locations and a simple direction-to-safety interface.
-8. **On-device multilingual assistant** — command/intent layer only; deterministic logic remains responsible for safety-critical actions.
+- Verified Safe Nodes: hospitals, pharmacies, campus security/hostel desks and selected staffed locations.
+- Safety Compass: one large arrow toward a verified staffed point.
+- Offline map package for a demo region.
+- Push notifications for recipient alerts and Journey Guard overdue events.
+- Better silent/stealth activation research within Android/iOS platform rules.
 
-The guiding principle remains: **one action from the victim; multiple layers of response from the system.**
+## V2
+
+- ViraMesh BLE device discovery.
+- encrypted emergency relay packet.
+- gateway phone forwards to backend when the victim has no data.
+- TTL, replay protection, deduplication and relay acknowledgement.
+- privacy-preserving local device presence independent of internet.
+
+## Principle
+
+Safety Presence must never become a stalking surface. Nearby participants remain anonymous until an explicitly designed emergency-response flow justifies any additional disclosure.

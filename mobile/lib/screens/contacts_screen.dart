@@ -179,75 +179,71 @@ class _ContactsScreenState extends State<ContactsScreen> {
     return RefreshIndicator(
       onRefresh: _load,
       child: ListView(
-        padding: const EdgeInsets.fromLTRB(20, 18, 20, 110),
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 110),
         children: [
           Text('Trusted Circle', style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w900, color: ViraColors.plum)),
-          const SizedBox(height: 6),
-          const Text('Accepted contacts can receive SOS alerts. Their phone numbers are cached securely for SMS fallback.', style: TextStyle(color: ViraColors.mutedPlum)),
-          const SizedBox(height: 16),
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(color: ViraColors.successSoft, borderRadius: BorderRadius.circular(20)),
-            child: Row(
-              children: [
-                const Icon(Icons.sim_card_outlined, color: ViraColors.success),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    const Text('Your emergency number', style: TextStyle(fontWeight: FontWeight.w900)),
-                    Text(widget.session.user?.phoneE164 ?? 'Not configured', style: const TextStyle(color: ViraColors.mutedPlum)),
-                  ]),
-                ),
-                TextButton(onPressed: _editOwnPhone, child: const Text('Edit')),
-              ],
-            ),
+          const SizedBox(height: 5),
+          const Text('Only accepted people receive your SOS and become eligible for SMS fallback.', style: TextStyle(color: ViraColors.mutedPlum)),
+          const SizedBox(height: 18),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const CircleAvatar(backgroundColor: ViraColors.successSoft, child: Icon(Icons.phone_iphone_rounded, color: ViraColors.success)),
+            title: const Text('Your emergency number', style: TextStyle(fontWeight: FontWeight.w900)),
+            subtitle: Text(widget.session.user?.phoneE164 ?? 'Not configured'),
+            trailing: TextButton(onPressed: _editOwnPhone, child: const Text('Edit')),
           ),
-          const SizedBox(height: 16),
+          const Divider(),
+          const SizedBox(height: 8),
           Row(
             children: [
-              Expanded(child: FilledButton.icon(onPressed: _invite, icon: const Icon(Icons.person_add_alt_1), label: const Text('Invite'))),
+              Expanded(child: FilledButton.icon(onPressed: _invite, icon: const Icon(Icons.person_add_alt_1_rounded), label: const Text('Invite'))),
               const SizedBox(width: 10),
-              Expanded(child: FilledButton.tonalIcon(onPressed: _accept, icon: const Icon(Icons.verified_user_outlined), label: const Text('Accept code'))),
+              Expanded(child: OutlinedButton.icon(onPressed: _accept, icon: const Icon(Icons.verified_user_outlined), label: const Text('Accept code'))),
             ],
           ),
           const SizedBox(height: 20),
+          Text('People', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900)),
+          const SizedBox(height: 4),
           if (_loading)
             const Center(child: Padding(padding: EdgeInsets.all(30), child: CircularProgressIndicator()))
           else if (_error != null)
             Text(_error!, style: const TextStyle(color: ViraColors.pinkDark))
           else if (_contacts.isEmpty)
-            Container(
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(color: ViraColors.lilac, borderRadius: BorderRadius.circular(24)),
-              child: const Column(children: [
-                Icon(Icons.group_outlined, size: 44, color: ViraColors.plum),
-                SizedBox(height: 12),
-                Text('No trusted contacts yet', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 18)),
-                SizedBox(height: 5),
-                Text('Invite someone who already has a ViraNari account.', textAlign: TextAlign.center),
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 30),
+              child: Column(children: [
+                Icon(Icons.group_outlined, size: 42, color: ViraColors.mutedPlum),
+                SizedBox(height: 8),
+                Text('No trusted contacts yet', style: TextStyle(fontWeight: FontWeight.w900)),
               ]),
             )
           else
-            ..._contacts.map((c) => Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20)),
-                    child: Row(children: [
-                      CircleAvatar(
+            ..._contacts.map((c) => Column(
+                  children: [
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: CircleAvatar(
                         backgroundColor: c.status == 'active' ? ViraColors.successSoft : ViraColors.lilac,
-                        child: Icon(c.status == 'active' ? Icons.verified_user : Icons.hourglass_top, color: c.status == 'active' ? ViraColors.success : ViraColors.plum),
+                        child: Icon(c.status == 'active' ? Icons.verified_user_rounded : Icons.hourglass_top_rounded, color: c.status == 'active' ? ViraColors.success : ViraColors.warning),
                       ),
-                      const SizedBox(width: 12),
-                      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                        Text(c.alias, style: const TextStyle(fontWeight: FontWeight.w900)),
-                        Text('${c.name} · ${c.email}', style: const TextStyle(color: ViraColors.mutedPlum)),
-                        if (c.phoneE164 != null) Text('SMS ${c.phoneE164}', style: const TextStyle(color: ViraColors.success, fontWeight: FontWeight.w700)),
-                        Text(c.status.toUpperCase(), style: TextStyle(fontSize: 11, fontWeight: FontWeight.w900, color: c.status == 'active' ? ViraColors.success : ViraColors.warning)),
-                      ])),
-                      IconButton(onPressed: () => _remove(c), icon: const Icon(Icons.delete_outline), tooltip: 'Remove'),
-                    ]),
-                  ),
+                      title: Text(c.alias, style: const TextStyle(fontWeight: FontWeight.w900)),
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('${c.name} · ${c.email}'),
+                          if (c.phoneE164 != null) Text('SMS ${c.phoneE164}', style: const TextStyle(color: ViraColors.success, fontWeight: FontWeight.w700)),
+                        ],
+                      ),
+                      trailing: PopupMenuButton<String>(
+                        onSelected: (value) { if (value == 'remove') _remove(c); },
+                        itemBuilder: (_) => [
+                          PopupMenuItem(enabled: false, child: Text(c.status.toUpperCase())),
+                          const PopupMenuItem(value: 'remove', child: Text('Remove')),
+                        ],
+                      ),
+                    ),
+                    const Divider(height: 1),
+                  ],
                 )),
         ],
       ),

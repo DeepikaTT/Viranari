@@ -78,6 +78,9 @@ class AlertRecord {
     this.note,
     this.cancelledAt,
     this.resolvedAt,
+    this.lastDeviceSeenAt,
+    this.lastGpsFixAt,
+    this.lastLocationSyncAt,
   });
 
   final String id;
@@ -95,6 +98,9 @@ class AlertRecord {
   final String? note;
   final DateTime? cancelledAt;
   final DateTime? resolvedAt;
+  final DateTime? lastDeviceSeenAt;
+  final DateTime? lastGpsFixAt;
+  final DateTime? lastLocationSyncAt;
 
   factory AlertRecord.fromJson(Map<String, dynamic> json) => AlertRecord(
         id: json['id'] as String,
@@ -114,6 +120,9 @@ class AlertRecord {
         note: json['note'] as String?,
         cancelledAt: json['cancelled_at'] == null ? null : parseApiTime(json['cancelled_at'] as String),
         resolvedAt: json['resolved_at'] == null ? null : parseApiTime(json['resolved_at'] as String),
+        lastDeviceSeenAt: json['last_device_seen_at'] == null ? null : parseApiTime(json['last_device_seen_at'] as String),
+        lastGpsFixAt: json['last_gps_fix_at'] == null ? null : parseApiTime(json['last_gps_fix_at'] as String),
+        lastLocationSyncAt: json['last_location_sync_at'] == null ? null : parseApiTime(json['last_location_sync_at'] as String),
       );
 
   bool get isActive => state == 'active';
@@ -181,6 +190,9 @@ class InboxAlert {
     this.deliveredAt,
     this.acknowledgedAt,
     this.note,
+    this.lastDeviceSeenAt,
+    this.lastGpsFixAt,
+    this.lastLocationSyncAt,
   });
 
   final String alertId;
@@ -199,6 +211,9 @@ class InboxAlert {
   final DateTime? deliveredAt;
   final DateTime? acknowledgedAt;
   final String? note;
+  final DateTime? lastDeviceSeenAt;
+  final DateTime? lastGpsFixAt;
+  final DateTime? lastLocationSyncAt;
 
   bool get isActive => state == 'active';
 
@@ -219,6 +234,9 @@ class InboxAlert {
         deliveredAt: json['delivered_at'] == null ? null : parseApiTime(json['delivered_at'] as String),
         acknowledgedAt: json['acknowledged_at'] == null ? null : parseApiTime(json['acknowledged_at'] as String),
         note: json['note'] as String?,
+        lastDeviceSeenAt: json['last_device_seen_at'] == null ? null : parseApiTime(json['last_device_seen_at'] as String),
+        lastGpsFixAt: json['last_gps_fix_at'] == null ? null : parseApiTime(json['last_gps_fix_at'] as String),
+        lastLocationSyncAt: json['last_location_sync_at'] == null ? null : parseApiTime(json['last_location_sync_at'] as String),
       );
 }
 
@@ -320,4 +338,68 @@ class QueuedLocationUpdate {
         headingDeg: (json['heading_deg'] as num?)?.toDouble(),
         recordedLocallyAt: parseApiTime(json['recorded_locally_at'] as String),
       );
+}
+
+
+class PresencePoint {
+  const PresencePoint({required this.approxDistanceM, required this.bearingDeg, required this.ageSeconds});
+  final int approxDistanceM;
+  final int bearingDeg;
+  final int ageSeconds;
+
+  factory PresencePoint.fromJson(Map<String, dynamic> json) => PresencePoint(
+        approxDistanceM: json['approx_distance_m'] as int,
+        bearingDeg: json['bearing_deg'] as int,
+        ageSeconds: json['age_seconds'] as int,
+      );
+}
+
+class JourneyRecord {
+  const JourneyRecord({
+    required this.id,
+    required this.ownerId,
+    required this.ownerName,
+    required this.destinationLabel,
+    required this.expectedArrivalAt,
+    required this.state,
+    required this.createdAt,
+    required this.updatedAt,
+    required this.overdue,
+    this.ownerPhoneE164,
+    this.startLatitude,
+    this.startLongitude,
+    this.completedAt,
+  });
+
+  final String id;
+  final String ownerId;
+  final String ownerName;
+  final String? ownerPhoneE164;
+  final String destinationLabel;
+  final DateTime expectedArrivalAt;
+  final String state;
+  final double? startLatitude;
+  final double? startLongitude;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+  final DateTime? completedAt;
+  final bool overdue;
+
+  factory JourneyRecord.fromJson(Map<String, dynamic> json) => JourneyRecord(
+        id: json['id'] as String,
+        ownerId: json['owner_id'] as String,
+        ownerName: json['owner_name'] as String,
+        ownerPhoneE164: json['owner_phone_e164'] as String?,
+        destinationLabel: json['destination_label'] as String,
+        expectedArrivalAt: parseApiTime(json['expected_arrival_at'] as String),
+        state: json['state'] as String,
+        startLatitude: (json['start_latitude'] as num?)?.toDouble(),
+        startLongitude: (json['start_longitude'] as num?)?.toDouble(),
+        createdAt: parseApiTime(json['created_at'] as String),
+        updatedAt: parseApiTime(json['updated_at'] as String),
+        completedAt: json['completed_at'] == null ? null : parseApiTime(json['completed_at'] as String),
+        overdue: json['overdue'] as bool? ?? false,
+      );
+
+  bool get isActive => state == 'active';
 }

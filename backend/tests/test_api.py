@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from app.config import Settings
 from app.main import create_app
 from fastapi.testclient import TestClient
@@ -379,3 +380,290 @@ def test_22_existing_v12_sqlite_schema_is_upgraded_in_place(tmp_path):
     assert "phone_e164" in user_cols
     assert "speed_mps" in loc_cols
     assert "heading_deg" in loc_cols
+
+
+def test_23_existing_v1_alert_table_gets_all_session_columns(tmp_path):
+    import sqlite3
+
+    db_path = tmp_path / "v1-old.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE alerts (
+            id VARCHAR(36) PRIMARY KEY,
+            owner_id VARCHAR(36),
+            idempotency_key VARCHAR(100),
+            latitude FLOAT,
+            longitude FLOAT,
+            accuracy_m FLOAT,
+            battery_percent INTEGER,
+            note TEXT,
+            created_at DATETIME
+        );
+        INSERT INTO alerts(
+            id, owner_id, idempotency_key, latitude, longitude,
+            accuracy_m, battery_percent, note, created_at
+        ) VALUES (
+            'a1', 'u1', 'idem-1', 17.0, 78.0, 5.0, 50, 'old',
+            '2026-09-25 12:00:00'
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    from app.db import apply_compat_migrations, build_engine
+
+    engine = build_engine(str(db_path))
+    apply_compat_migrations(engine)
+
+    conn = sqlite3.connect(db_path)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(alerts)")}
+    row = conn.execute(
+        "SELECT network_state, is_test, state, updated_at, cancelled_at, resolved_at "
+        "FROM alerts WHERE id='a1'"
+    ).fetchone()
+    conn.close()
+
+    assert {
+        "network_state", "is_test", "state", "updated_at",
+        "cancelled_at", "resolved_at"
+    }.issubset(cols)
+    assert row[0] is None
+    assert row[1] == 0
+    assert row[2] == "active"
+    assert row[3] == "2026-09-25 12:00:00"
+    assert row[4] is None
+    assert row[5] is None
+
+
+def test_24_offline_location_batch_replays_original_timestamps(client):
+    owner, contact, _ = _pair(client)
+    alert = _alert(client, owner, "batch-replay-01").json()
+    created = datetime.fromisoformat(alert["created_at"].replace("Z", "+00:00"))
+    t1 = created + timedelta(seconds=5)
+    t2 = created + timedelta(seconds=10)
+    r = client.post(
+        f"/alerts/{alert['id']}/locations/batch",
+        headers=auth(owner["access_token"]),
+        json={
+            "points": [
+                {
+                    "latitude": 17.390,
+                    "longitude": 78.490,
+                    "accuracy_m": 5.0,
+                    "battery_percent": 49,
+                    "network_state": "offline",
+                    "speed_mps": 1.2,
+                    "heading_deg": 30.0,
+                    "recorded_at": t1.isoformat(),
+                },
+                {
+                    "latitude": 17.391,
+                    "longitude": 78.491,
+                    "accuracy_m": 4.0,
+                    "battery_percent": 48,
+                    "network_state": "offline",
+                    "speed_mps": 1.4,
+                    "heading_deg": 35.0,
+                    "recorded_at": t2.isoformat(),
+                },
+            ]
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["accepted"] == 2
+    timeline = client.get(f"/alerts/{alert['id']}/locations", headers=auth(contact["access_token"]))
+    assert timeline.status_code == 200
+    points = timeline.json()
+    assert len(points) == 3
+    assert points[-2]["recorded_at"].startswith(t1.replace(tzinfo=None).isoformat())
+    assert points[-1]["recorded_at"].startswith(t2.replace(tzinfo=None).isoformat())
+    assert points[-1]["latitude"] == 17.391
+
+
+def test_25_heartbeat_keeps_device_live_without_adding_location(client):
+    owner, contact, _ = _pair(client)
+    alert = _alert(client, owner, "heartbeat-01").json()
+    before = client.get(f"/alerts/{alert['id']}/locations", headers=auth(contact["access_token"])).json()
+    beat = client.post(
+        f"/alerts/{alert['id']}/heartbeat",
+        headers=auth(owner["access_token"]),
+        json={"battery_percent": 61, "network_state": "mobile", "last_gps_fix_at": alert["created_at"]},
+    )
+    assert beat.status_code == 200, beat.text
+    payload = beat.json()
+    assert payload["last_device_seen_at"] is not None
+    assert payload["battery_percent"] == 61
+    after = client.get(f"/alerts/{alert['id']}/locations", headers=auth(contact["access_token"])).json()
+    assert len(after) == len(before)  # heartbeat is liveness, not a fake GPS sample
+
+
+def test_26_inbox_exposes_liveness_timestamps(client):
+    owner, contact, _ = _pair(client)
+    alert = _alert(client, owner, "heartbeat-inbox-01").json()
+    client.post(
+        f"/alerts/{alert['id']}/heartbeat",
+        headers=auth(owner["access_token"]),
+        json={"battery_percent": 60, "network_state": "wifi", "last_gps_fix_at": alert["created_at"]},
+    )
+    inbox = client.get("/alerts/inbox", headers=auth(contact["access_token"]))
+    assert inbox.status_code == 200
+    row = inbox.json()[0]
+    assert row["last_device_seen_at"] is not None
+    assert row["last_gps_fix_at"] is not None
+    assert row["last_location_sync_at"] is not None
+
+
+def test_27_v13_database_migrates_heartbeat_columns(tmp_path):
+    import sqlite3
+    from app.db import apply_compat_migrations, build_engine
+
+    db_path = tmp_path / "v13.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE alerts (
+            id VARCHAR(36) PRIMARY KEY,
+            owner_id VARCHAR(36), idempotency_key VARCHAR(100),
+            latitude FLOAT, longitude FLOAT, accuracy_m FLOAT,
+            battery_percent INTEGER, network_state VARCHAR(40), is_test BOOLEAN,
+            note TEXT, state VARCHAR(20), created_at DATETIME, updated_at DATETIME,
+            cancelled_at DATETIME, resolved_at DATETIME
+        );
+        INSERT INTO alerts(id, owner_id, idempotency_key, latitude, longitude, state, created_at, updated_at)
+        VALUES('a1','u1','idem',17,78,'active','2026-09-25 12:00:00','2026-09-25 12:01:00');
+        """
+    )
+    conn.commit(); conn.close()
+    engine = build_engine(str(db_path))
+    apply_compat_migrations(engine)
+    conn = sqlite3.connect(db_path)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(alerts)")}
+    row = conn.execute("SELECT last_device_seen_at,last_gps_fix_at,last_location_sync_at FROM alerts WHERE id='a1'").fetchone()
+    conn.close()
+    assert {"last_device_seen_at", "last_gps_fix_at", "last_location_sync_at"}.issubset(cols)
+    assert row == ("2026-09-25 12:01:00", "2026-09-25 12:01:00", "2026-09-25 12:01:00")
+
+
+def test_28_safety_presence_is_anonymous_and_coarse(client):
+    a = register(client, "Asha", "asha@example.com")
+    b = register(client, "Maya", "maya@example.com")
+    update = client.post(
+        "/presence", headers=auth(a["access_token"]),
+        json={"latitude": 17.385044, "longitude": 78.486671, "enabled": True},
+    )
+    assert update.status_code == 200
+    nearby = client.get(
+        "/presence/nearby?latitude=17.3850&longitude=78.4867&radius_m=1000",
+        headers=auth(b["access_token"]),
+    )
+    assert nearby.status_code == 200
+    assert len(nearby.json()) == 1
+    point = nearby.json()[0]
+    assert set(point.keys()) == {"approx_distance_m", "bearing_deg", "age_seconds"}
+    assert point["approx_distance_m"] >= 50
+
+
+def test_29_disabled_presence_disappears(client):
+    a = register(client, "Asha", "asha@example.com")
+    b = register(client, "Maya", "maya@example.com")
+    client.post("/presence", headers=auth(a["access_token"]), json={"latitude": 17.385, "longitude": 78.487, "enabled": True})
+    client.delete("/presence", headers=auth(a["access_token"]))
+    nearby = client.get(
+        "/presence/nearby?latitude=17.385&longitude=78.487&radius_m=1000",
+        headers=auth(b["access_token"]),
+    )
+    assert nearby.status_code == 200
+    assert nearby.json() == []
+
+
+def test_30_journey_guard_visible_to_trusted_contact(client):
+    owner, contact, _ = _pair(client)
+    journey = client.post(
+        "/journeys",
+        headers=auth(owner["access_token"]),
+        json={"destination_label": "Hostel", "duration_minutes": 30, "start_latitude": 17.385, "start_longitude": 78.487},
+    )
+    assert journey.status_code == 201, journey.text
+    inbox = client.get("/journeys/inbox", headers=auth(contact["access_token"]))
+    assert inbox.status_code == 200
+    assert inbox.json()[0]["destination_label"] == "Hostel"
+    safe = client.post(f"/journeys/{journey.json()['id']}/safe", headers=auth(owner["access_token"]))
+    assert safe.status_code == 200
+    assert safe.json()["state"] == "safe"
+    assert client.get("/journeys/inbox", headers=auth(contact["access_token"])).json() == []
+
+
+def test_31_stranger_cannot_complete_someone_elses_journey(client):
+    owner = register(client, "Asha", "asha@example.com")
+    stranger = register(client, "Riya", "riya@example.com")
+    journey = client.post(
+        "/journeys",
+        headers=auth(owner["access_token"]),
+        json={"destination_label": "Home", "duration_minutes": 15},
+    ).json()
+    response = client.post(f"/journeys/{journey['id']}/safe", headers=auth(stranger["access_token"]))
+    assert response.status_code == 404
+
+
+def test_32_create_app_upgrades_existing_alert_schema_before_indexes(tmp_path):
+    import sqlite3
+
+    db_path = tmp_path / "upgrade-startup.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE users (
+            id VARCHAR(36) PRIMARY KEY,
+            name VARCHAR(80), email VARCHAR(255), phone_e164 VARCHAR(16),
+            password_hash TEXT, created_at DATETIME
+        );
+        CREATE TABLE alerts (
+            id VARCHAR(36) PRIMARY KEY,
+            owner_id VARCHAR(36), idempotency_key VARCHAR(100), latitude FLOAT, longitude FLOAT,
+            accuracy_m FLOAT, battery_percent INTEGER, network_state VARCHAR(40), is_test BOOLEAN,
+            note TEXT, state VARCHAR(20), created_at DATETIME, updated_at DATETIME,
+            cancelled_at DATETIME, resolved_at DATETIME
+        );
+        CREATE TABLE alert_locations (
+            id VARCHAR(36) PRIMARY KEY, alert_id VARCHAR(36), latitude FLOAT, longitude FLOAT,
+            accuracy_m FLOAT, battery_percent INTEGER, network_state VARCHAR(40), speed_mps FLOAT,
+            heading_deg FLOAT, recorded_at DATETIME
+        );
+        """
+    )
+    conn.commit(); conn.close()
+
+    cfg = Settings(database_path=str(db_path), jwt_secret="startup-upgrade-secret-0123456789012345")
+    app = create_app(database_path=str(db_path), settings=cfg)
+    with TestClient(app) as c:
+        assert c.get("/health").status_code == 200
+
+    conn = sqlite3.connect(db_path)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(alerts)")}
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    conn.close()
+    assert {"last_device_seen_at", "last_gps_fix_at", "last_location_sync_at"}.issubset(cols)
+    assert {"journeys", "safety_presence"}.issubset(tables)
+
+
+def test_33_journey_overdue_is_derived_server_side(client):
+    from app.models import Journey, utcnow
+
+    owner, contact, _ = _pair(client)
+    journey = client.post(
+        "/journeys",
+        headers=auth(owner["access_token"]),
+        json={"destination_label": "Home", "duration_minutes": 15},
+    ).json()
+
+    SessionLocal = client.app.state.SessionLocal
+    with SessionLocal() as db:
+        row = db.get(Journey, journey["id"])
+        row.expected_arrival_at = utcnow() - timedelta(minutes=1)
+        db.commit()
+
+    inbox = client.get("/journeys/inbox", headers=auth(contact["access_token"]))
+    assert inbox.status_code == 200
+    assert inbox.json()[0]["overdue"] is True

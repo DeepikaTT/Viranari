@@ -14,10 +14,20 @@ class SmsFallbackResult {
 class SmsFallbackService {
   static const _channel = MethodChannel('viranari/sms');
 
+  Future<bool> _androidCapabilityReady() async {
+    try {
+      final result = await _channel.invokeMapMethod<String, dynamic>('smsCapability');
+      return result?['capable'] == true && result?['sim_ready'] == true && result?['subscription_ready'] == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<bool> prepare() async {
     if (Platform.isAndroid) {
       final status = await Permission.sms.request();
-      return status.isGranted;
+      if (!status.isGranted) return false;
+      return _androidCapabilityReady();
     }
     if (Platform.isIOS) return true;
     return false;
@@ -26,29 +36,37 @@ class SmsFallbackService {
   Future<bool> isReady() async {
     if (Platform.isAndroid) {
       final status = await Permission.sms.status;
-      return status.isGranted;
+      if (!status.isGranted) return false;
+      return _androidCapabilityReady();
     }
     return Platform.isIOS;
   }
 
   Future<SmsFallbackResult> send({required List<String> recipients, required String message}) async {
     if (recipients.isEmpty) {
-      return const SmsFallbackResult(dispatchedCount: 0, composerOpened: false, message: 'No trusted phone numbers cached.');
+      return const SmsFallbackResult(dispatchedCount: 0, composerOpened: false, message: 'No accepted Trusted Circle phone numbers are cached on this device.');
     }
+
     if (Platform.isAndroid) {
       final status = await Permission.sms.status;
       if (!status.isGranted) {
-        return const SmsFallbackResult(dispatchedCount: 0, composerOpened: false, message: 'SMS permission was not prepared before the emergency.');
+        return const SmsFallbackResult(dispatchedCount: 0, composerOpened: false, message: 'SEND_SMS permission is not granted. Enable SMS fallback before an emergency.');
+      }
+      if (!await _androidCapabilityReady()) {
+        return const SmsFallbackResult(dispatchedCount: 0, composerOpened: false, message: 'SMS is not ready. Keep airplane mode off, confirm a SIM/eSIM can text, and select a default SMS SIM in Android settings.');
       }
       try {
         final count = await _channel.invokeMethod<int>('sendSms', {
           'recipients': recipients,
           'message': message,
         });
+        final sent = count ?? 0;
         return SmsFallbackResult(
-          dispatchedCount: count ?? 0,
+          dispatchedCount: sent,
           composerOpened: false,
-          message: 'SMS fallback dispatched through the phone network.',
+          message: sent > 0
+              ? 'Emergency SMS submitted to the phone network for $sent trusted contact${sent == 1 ? '' : 's'}.'
+              : 'The phone did not submit any SMS messages.',
         );
       } on PlatformException catch (e) {
         return SmsFallbackResult(dispatchedCount: 0, composerOpened: false, message: e.message ?? 'SMS dispatch failed.');

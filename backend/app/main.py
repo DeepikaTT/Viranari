@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import secrets
 from collections import defaultdict, deque
 from threading import Lock
@@ -8,7 +9,7 @@ from time import monotonic
 from datetime import datetime, timedelta, timezone
 
 import jwt
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import and_, select
@@ -24,6 +25,9 @@ from .models import (
     AlertRecipient,
     AlertState,
     ContactStatus,
+    Journey,
+    JourneyState,
+    SafetyPresence,
     TrustedContact,
     User,
     utcnow,
@@ -31,6 +35,9 @@ from .models import (
 from .schemas import (
     AlertCreateIn,
     AlertLocationIn,
+    AlertLocationBatchIn,
+    AlertHeartbeatIn,
+    AlertLocationBatchOut,
     AlertLocationOut,
     AlertOut,
     AuditEventOut,
@@ -38,9 +45,13 @@ from .schemas import (
     ContactCreateIn,
     ContactOut,
     InboxAlertOut,
+    JourneyCreateIn,
+    JourneyOut,
     LoginIn,
     MessageOut,
     PhoneUpdateIn,
+    PresencePointOut,
+    PresenceUpdateIn,
     RecipientStatusOut,
     RegisterIn,
     TokenOut,
@@ -76,15 +87,17 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
     db_path = database_path or cfg.database_path
     engine = build_engine(db_path)
     SessionLocal = build_session_factory(engine)
-    Base.metadata.create_all(engine)
+    # Upgrade existing SQLite tables before SQLAlchemy tries to create indexes
+    # for new model columns. Then create any entirely new V1.4 tables.
     apply_compat_migrations(engine)
+    Base.metadata.create_all(engine)
 
     app = FastAPI(
         title="ViraNari API",
-        version="1.3.0",
+        version="1.4.0",
         description=(
             "Emergency-response API with consent-based trusted contacts, delivery receipts, "
-            "idempotent offline retry, Find-My-style live emergency sessions, SMS-ready trusted contacts, and location updates."
+            "idempotent offline retry, heartbeat-based live safety, SMS fallback, privacy-preserving Safety Presence, and Journey Guard."
         ),
     )
     app.state.engine = engine
@@ -193,12 +206,15 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
             updated_at=ensure_utc(alert.updated_at),
             cancelled_at=ensure_utc(alert.cancelled_at),
             resolved_at=ensure_utc(alert.resolved_at),
+            last_device_seen_at=ensure_utc(alert.last_device_seen_at),
+            last_gps_fix_at=ensure_utc(alert.last_gps_fix_at),
+            last_location_sync_at=ensure_utc(alert.last_location_sync_at),
             recipients=recipients,
         )
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "service": "viranari-api", "version": "1.3.0"}
+        return {"status": "ok", "service": "viranari-api", "version": "1.4.0"}
 
     @app.post("/auth/register", response_model=TokenOut, status_code=201)
     def register(payload: RegisterIn, db: Session = Depends(get_db)):
@@ -358,6 +374,9 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
             note=payload.note,
             state=AlertState.active.value,
             updated_at=now,
+            last_device_seen_at=now,
+            last_gps_fix_at=now,
+            last_location_sync_at=now,
         )
         db.add(alert)
         db.flush()
@@ -457,6 +476,9 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
         alert.battery_percent = payload.battery_percent
         alert.network_state = payload.network_state
         alert.updated_at = now
+        alert.last_device_seen_at = now
+        alert.last_gps_fix_at = now
+        alert.last_location_sync_at = now
         db.add(
             AlertLocation(
                 alert_id=alert.id,
@@ -470,6 +492,92 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
                 recorded_at=now,
             )
         )
+        db.commit()
+        result = db.scalar(alert_query().where(Alert.id == alert.id))
+        return alert_out(db, result)
+
+    @app.post("/alerts/{alert_id}/locations/batch", response_model=AlertLocationBatchOut)
+    def update_alert_locations_batch(
+        alert_id: str,
+        payload: AlertLocationBatchIn,
+        current: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ):
+        enforce_rate(f"location-batch:{current.id}", limit=30)
+        alert = db.scalar(alert_query().where(Alert.id == alert_id))
+        if not alert or alert.owner_id != current.id:
+            raise HTTPException(status_code=404, detail="Alert not found")
+        if alert.state != AlertState.active.value:
+            raise HTTPException(status_code=409, detail="Emergency session is not active")
+
+        now = utcnow()
+        alert_created = ensure_utc(alert.created_at)
+        accepted = 0
+        latest_payload = None
+        latest_recorded = None
+        for point in payload.points:
+            recorded = ensure_utc(point.recorded_at)
+            if recorded > now + timedelta(minutes=5):
+                recorded = now
+            if recorded < alert_created - timedelta(minutes=1):
+                recorded = alert_created
+            db.add(
+                AlertLocation(
+                    alert_id=alert.id,
+                    latitude=point.latitude,
+                    longitude=point.longitude,
+                    accuracy_m=point.accuracy_m,
+                    battery_percent=point.battery_percent,
+                    network_state=point.network_state,
+                    speed_mps=point.speed_mps,
+                    heading_deg=point.heading_deg,
+                    recorded_at=recorded,
+                )
+            )
+            accepted += 1
+            if latest_recorded is None or recorded >= latest_recorded:
+                latest_recorded = recorded
+                latest_payload = point
+
+        if latest_payload is not None:
+            alert.latitude = latest_payload.latitude
+            alert.longitude = latest_payload.longitude
+            alert.accuracy_m = latest_payload.accuracy_m
+            alert.battery_percent = latest_payload.battery_percent
+            alert.network_state = latest_payload.network_state
+            alert.updated_at = now
+            alert.last_device_seen_at = now
+            alert.last_gps_fix_at = latest_recorded
+            alert.last_location_sync_at = now
+
+        db.commit()
+        return AlertLocationBatchOut(accepted=accepted)
+
+    @app.post("/alerts/{alert_id}/heartbeat", response_model=AlertOut)
+    def alert_heartbeat(
+        alert_id: str,
+        payload: AlertHeartbeatIn,
+        current: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ):
+        enforce_rate(f"heartbeat:{current.id}", limit=120)
+        alert = db.scalar(alert_query().where(Alert.id == alert_id))
+        if not alert or alert.owner_id != current.id:
+            raise HTTPException(status_code=404, detail="Alert not found")
+        if alert.state != AlertState.active.value:
+            raise HTTPException(status_code=409, detail="Emergency session is not active")
+
+        now = utcnow()
+        alert.last_device_seen_at = now
+        alert.updated_at = now
+        if payload.battery_percent is not None:
+            alert.battery_percent = payload.battery_percent
+        if payload.network_state is not None:
+            alert.network_state = payload.network_state
+        if payload.last_gps_fix_at is not None:
+            gps_time = ensure_utc(payload.last_gps_fix_at)
+            if gps_time <= now + timedelta(minutes=5):
+                alert.last_gps_fix_at = gps_time
         db.commit()
         result = db.scalar(alert_query().where(Alert.id == alert.id))
         return alert_out(db, result)
@@ -573,6 +681,9 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
                     updated_at=ensure_utc(alert.updated_at),
                     delivered_at=ensure_utc(recipient.delivered_at),
                     acknowledged_at=ensure_utc(recipient.acknowledged_at),
+                    last_device_seen_at=ensure_utc(alert.last_device_seen_at),
+                    last_gps_fix_at=ensure_utc(alert.last_gps_fix_at),
+                    last_location_sync_at=ensure_utc(alert.last_location_sync_at),
                 )
             )
         if changed:
@@ -603,6 +714,203 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
         audit(db, "sos_acknowledged", current.id, alert_id, None)
         db.commit()
         return MessageOut(message="Alert acknowledged")
+
+    # ---------- V1.4 Safety Presence ----------
+    def _quantise(value: float) -> float:
+        # ~110 m latitude cells. Exact coordinates are never stored.
+        return round(value, 3)
+
+    def _distance_and_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> tuple[float, float]:
+        r = 6_371_000.0
+        p1, p2 = math.radians(lat1), math.radians(lat2)
+        dp = math.radians(lat2 - lat1)
+        dl = math.radians(lon2 - lon1)
+        a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+        d = 2 * r * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+        y = math.sin(dl) * math.cos(p2)
+        x = math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dl)
+        bearing = (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
+        return d, bearing
+
+    @app.post("/presence", response_model=MessageOut)
+    def update_presence(
+        payload: PresenceUpdateIn,
+        current: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ):
+        presence = db.get(SafetyPresence, current.id)
+        now = utcnow()
+        if presence is None:
+            presence = SafetyPresence(
+                user_id=current.id,
+                coarse_latitude=_quantise(payload.latitude),
+                coarse_longitude=_quantise(payload.longitude),
+                enabled=payload.enabled,
+                last_seen_at=now,
+            )
+            db.add(presence)
+        else:
+            presence.coarse_latitude = _quantise(payload.latitude)
+            presence.coarse_longitude = _quantise(payload.longitude)
+            presence.enabled = payload.enabled
+            presence.last_seen_at = now
+        db.commit()
+        return MessageOut(message="Safety Presence updated" if payload.enabled else "Safety Presence disabled")
+
+    @app.delete("/presence", response_model=MessageOut)
+    def disable_presence(current: User = Depends(get_current_user), db: Session = Depends(get_db)):
+        presence = db.get(SafetyPresence, current.id)
+        if presence is not None:
+            presence.enabled = False
+            presence.last_seen_at = utcnow()
+            db.commit()
+        return MessageOut(message="Safety Presence disabled")
+
+    @app.get("/presence/nearby", response_model=list[PresencePointOut])
+    def nearby_presence(
+        latitude: float = Query(ge=-90, le=90),
+        longitude: float = Query(ge=-180, le=180),
+        radius_m: int = Query(default=1500, ge=100, le=3000),
+        current: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ):
+        now = utcnow()
+        cutoff = now - timedelta(seconds=120)
+        rows = db.scalars(
+            select(SafetyPresence).where(
+                and_(
+                    SafetyPresence.enabled.is_(True),
+                    SafetyPresence.user_id != current.id,
+                    SafetyPresence.last_seen_at >= cutoff,
+                )
+            )
+        ).all()
+        out: list[PresencePointOut] = []
+        for row in rows:
+            distance, bearing = _distance_and_bearing(latitude, longitude, row.coarse_latitude, row.coarse_longitude)
+            if distance > radius_m:
+                continue
+            seen = ensure_utc(row.last_seen_at)
+            age = max(0, int((now - seen).total_seconds()))
+            # Deliberately coarse. The client gets no user ID, name or exact point.
+            out.append(PresencePointOut(
+                approx_distance_m=max(50, int(round(distance / 50.0) * 50)),
+                bearing_deg=int(round(bearing / 45.0) * 45) % 360,
+                age_seconds=age,
+            ))
+        out.sort(key=lambda p: p.approx_distance_m)
+        return out[:20]
+
+    # ---------- V1.4 Journey Guard ----------
+    def journey_out(db: Session, journey: Journey) -> JourneyOut:
+        owner = db.get(User, journey.owner_id)
+        expected = ensure_utc(journey.expected_arrival_at)
+        return JourneyOut(
+            id=journey.id,
+            owner_id=journey.owner_id,
+            owner_name=owner.name,
+            owner_phone_e164=owner.phone_e164,
+            destination_label=journey.destination_label,
+            expected_arrival_at=expected,
+            state=journey.state,
+            start_latitude=journey.start_latitude,
+            start_longitude=journey.start_longitude,
+            created_at=ensure_utc(journey.created_at),
+            updated_at=ensure_utc(journey.updated_at),
+            completed_at=ensure_utc(journey.completed_at),
+            overdue=journey.state == JourneyState.active.value and expected < utcnow(),
+        )
+
+    @app.post("/journeys", response_model=JourneyOut, status_code=201)
+    def create_journey(
+        payload: JourneyCreateIn,
+        current: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ):
+        active = db.scalar(select(Journey).where(and_(Journey.owner_id == current.id, Journey.state == JourneyState.active.value)))
+        if active:
+            raise HTTPException(status_code=409, detail="A Journey Guard session is already active")
+        now = utcnow()
+        journey = Journey(
+            owner_id=current.id,
+            destination_label=payload.destination_label.strip(),
+            expected_arrival_at=now + timedelta(minutes=payload.duration_minutes),
+            state=JourneyState.active.value,
+            start_latitude=payload.start_latitude,
+            start_longitude=payload.start_longitude,
+            updated_at=now,
+        )
+        db.add(journey)
+        db.flush()
+        audit(db, "journey_started", current.id, journey.id, journey.destination_label)
+        db.commit()
+        db.refresh(journey)
+        return journey_out(db, journey)
+
+    @app.get("/journeys/active", response_model=JourneyOut)
+    def active_journey(current: User = Depends(get_current_user), db: Session = Depends(get_db)):
+        journey = db.scalar(
+            select(Journey)
+            .where(and_(Journey.owner_id == current.id, Journey.state == JourneyState.active.value))
+            .order_by(Journey.created_at.desc())
+        )
+        if not journey:
+            raise HTTPException(status_code=404, detail="No active Journey Guard session")
+        return journey_out(db, journey)
+
+    @app.get("/journeys/history", response_model=list[JourneyOut])
+    def journey_history(current: User = Depends(get_current_user), db: Session = Depends(get_db)):
+        journeys = db.scalars(select(Journey).where(Journey.owner_id == current.id).order_by(Journey.created_at.desc())).all()
+        return [journey_out(db, j) for j in journeys]
+
+    @app.post("/journeys/{journey_id}/safe", response_model=JourneyOut)
+    def complete_journey(journey_id: str, current: User = Depends(get_current_user), db: Session = Depends(get_db)):
+        journey = db.get(Journey, journey_id)
+        if not journey or journey.owner_id != current.id:
+            raise HTTPException(status_code=404, detail="Journey not found")
+        if journey.state == JourneyState.active.value:
+            now = utcnow()
+            journey.state = JourneyState.safe.value
+            journey.updated_at = now
+            journey.completed_at = now
+            audit(db, "journey_safe", current.id, journey.id, journey.destination_label)
+            db.commit()
+            db.refresh(journey)
+        return journey_out(db, journey)
+
+    @app.post("/journeys/{journey_id}/cancel", response_model=JourneyOut)
+    def cancel_journey(journey_id: str, current: User = Depends(get_current_user), db: Session = Depends(get_db)):
+        journey = db.get(Journey, journey_id)
+        if not journey or journey.owner_id != current.id:
+            raise HTTPException(status_code=404, detail="Journey not found")
+        if journey.state == JourneyState.active.value:
+            now = utcnow()
+            journey.state = JourneyState.cancelled.value
+            journey.updated_at = now
+            journey.completed_at = now
+            audit(db, "journey_cancelled", current.id, journey.id, journey.destination_label)
+            db.commit()
+            db.refresh(journey)
+        return journey_out(db, journey)
+
+    @app.get("/journeys/inbox", response_model=list[JourneyOut])
+    def journey_inbox(current: User = Depends(get_current_user), db: Session = Depends(get_db)):
+        owner_ids = db.scalars(
+            select(TrustedContact.owner_id).where(
+                and_(
+                    TrustedContact.contact_user_id == current.id,
+                    TrustedContact.status == ContactStatus.active.value,
+                )
+            )
+        ).all()
+        if not owner_ids:
+            return []
+        journeys = db.scalars(
+            select(Journey)
+            .where(and_(Journey.owner_id.in_(owner_ids), Journey.state == JourneyState.active.value))
+            .order_by(Journey.expected_arrival_at.asc())
+        ).all()
+        return [journey_out(db, j) for j in journeys]
 
     @app.get("/audit/recent", response_model=list[AuditEventOut])
     def recent_audit(current: User = Depends(get_current_user), db: Session = Depends(get_db)):

@@ -26,6 +26,12 @@ class AlertState(str, Enum):
     resolved = "resolved"
 
 
+class JourneyState(str, Enum):
+    active = "active"
+    safe = "safe"
+    cancelled = "cancelled"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -72,6 +78,12 @@ class Alert(Base):
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # V1.4 separates device liveness from GPS freshness. A stationary phone can
+    # remain LIVE even when its coordinates do not change.
+    last_device_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    last_gps_fix_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_location_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     recipients: Mapped[list["AlertRecipient"]] = relationship(
         back_populates="alert", cascade="all, delete-orphan"
     )
@@ -109,6 +121,37 @@ class AlertLocation(Base):
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
     alert: Mapped[Alert] = relationship(back_populates="locations")
+
+
+class SafetyPresence(Base):
+    """Opt-in, short-lived, coarse presence.
+
+    Exact locations are never stored for Safety Presence. Coordinates are
+    quantised before persistence and rows expire logically after 120 seconds.
+    """
+
+    __tablename__ = "safety_presence"
+
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    coarse_latitude: Mapped[float] = mapped_column(Float)
+    coarse_longitude: Mapped[float] = mapped_column(Float)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class Journey(Base):
+    __tablename__ = "journeys"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    owner_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    destination_label: Mapped[str] = mapped_column(String(120))
+    expected_arrival_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    state: Mapped[str] = mapped_column(String(20), default=JourneyState.active.value, index=True)
+    start_latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    start_longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class AuditEvent(Base):

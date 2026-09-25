@@ -184,6 +184,39 @@ class ApiClient {
         }),
       );
 
+  Future<int> updateLocationBatch(String alertId, List<QueuedLocationUpdate> points) async {
+    if (points.isEmpty) return 0;
+    final data = await _post('/alerts/$alertId/locations/batch', {
+      'points': points
+          .map((p) => {
+                'latitude': p.latitude,
+                'longitude': p.longitude,
+                'accuracy_m': p.accuracyM,
+                'battery_percent': p.batteryPercent,
+                'network_state': p.networkState,
+                'speed_mps': p.speedMps,
+                'heading_deg': p.headingDeg,
+                'recorded_at': p.recordedLocallyAt.toUtc().toIso8601String(),
+              })
+          .toList(),
+    });
+    return data['accepted'] as int? ?? 0;
+  }
+
+  Future<AlertRecord> heartbeat(
+    String alertId, {
+    int? batteryPercent,
+    String? networkState,
+    DateTime? lastGpsFixAt,
+  }) async =>
+      AlertRecord.fromJson(
+        await _post('/alerts/$alertId/heartbeat', {
+          'battery_percent': batteryPercent,
+          'network_state': networkState,
+          'last_gps_fix_at': lastGpsFixAt?.toUtc().toIso8601String(),
+        }),
+      );
+
   Future<List<AlertLocationPoint>> locations(String alertId) async =>
       (await _get('/alerts/$alertId/locations') as List<dynamic>)
           .map((e) => AlertLocationPoint.fromJson(e as Map<String, dynamic>))
@@ -199,4 +232,61 @@ class ApiClient {
       (await _get('/alerts/inbox') as List<dynamic>).map((e) => InboxAlert.fromJson(e as Map<String, dynamic>)).toList();
 
   Future<void> acknowledge(String alertId) async => _post('/alerts/$alertId/acknowledge', const {});
+
+  Future<void> updatePresence({required double latitude, required double longitude, bool enabled = true}) async {
+    await _post('/presence', {'latitude': latitude, 'longitude': longitude, 'enabled': enabled});
+  }
+
+  Future<void> disablePresence() async {
+    await _delete('/presence');
+  }
+
+  Future<List<PresencePoint>> nearbyPresence({
+    required double latitude,
+    required double longitude,
+    int radiusM = 1500,
+  }) async =>
+      (await _get('/presence/nearby?latitude=$latitude&longitude=$longitude&radius_m=$radiusM') as List<dynamic>)
+          .map((e) => PresencePoint.fromJson(e as Map<String, dynamic>))
+          .toList();
+
+  Future<JourneyRecord> startJourney({
+    required String destinationLabel,
+    required int durationMinutes,
+    double? startLatitude,
+    double? startLongitude,
+  }) async =>
+      JourneyRecord.fromJson(
+        await _post('/journeys', {
+          'destination_label': destinationLabel,
+          'duration_minutes': durationMinutes,
+          'start_latitude': startLatitude,
+          'start_longitude': startLongitude,
+        }),
+      );
+
+  Future<JourneyRecord?> activeJourney() async {
+    try {
+      return JourneyRecord.fromJson(await _get('/journeys/active') as Map<String, dynamic>);
+    } on ApiException catch (e) {
+      if (e.statusCode == 404) return null;
+      rethrow;
+    }
+  }
+
+  Future<JourneyRecord> markJourneySafe(String journeyId) async =>
+      JourneyRecord.fromJson(await _post('/journeys/$journeyId/safe', const {}));
+
+  Future<JourneyRecord> cancelJourney(String journeyId) async =>
+      JourneyRecord.fromJson(await _post('/journeys/$journeyId/cancel', const {}));
+
+  Future<List<JourneyRecord>> journeyInbox() async =>
+      (await _get('/journeys/inbox') as List<dynamic>)
+          .map((e) => JourneyRecord.fromJson(e as Map<String, dynamic>))
+          .toList();
+
+  Future<List<JourneyRecord>> journeyHistory() async =>
+      (await _get('/journeys/history') as List<dynamic>)
+          .map((e) => JourneyRecord.fromJson(e as Map<String, dynamic>))
+          .toList();
 }

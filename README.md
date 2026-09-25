@@ -1,67 +1,82 @@
-# ViraNari v1.3 — Live Safety
+# ViraNari V1.4 — Reliable Response
 
-ViraNari v1.3 upgrades the hackathon prototype from a static SOS workflow into a resilient **live emergency tracking session** with a Find-My-style trusted-contact view and an SMS fallback path.
+V1.4 turns the V1.3 Live Safety prototype into a more reliable, less cluttered emergency-response build. The central change is architectural: **device liveness is now separate from GPS freshness**. A victim who is standing still can remain LIVE because the phone sends heartbeats even if its coordinates do not change.
 
-## What is implemented
+## Implemented in V1.4
 
-### Victim app
-- Press-and-hold SOS with real GPS.
-- Active emergency session restored after app restart.
-- Continuous GPS sampling during the active session (5-second target interval, no movement threshold).
-- Android foreground emergency location notification.
-- Local timestamps for **phone GPS fix** vs **last successful server sync**.
-- Bounded encrypted queue for up to 120 unsynced location samples.
-- Automatic replay of queued GPS points when API connectivity returns.
-- Battery and connectivity state attached to location updates.
-- Speed and heading attached when the device provides them.
-- Trusted Circle delivery / acknowledgement counts.
-- Practice mode.
-- Resolve as safe / cancel false alarm.
-- SMS fallback preparation before danger.
-- Android SMS dispatch through the SIM when the API is unreachable.
-- iOS SMS fallback opens the Messages composer; iOS does not silently send arbitrary SMS.
+### Reliable live safety
+- Heartbeat endpoint and client heartbeat every ~10 seconds while an SOS is active.
+- Separate timestamps for:
+  - last device heartbeat,
+  - last GPS fix,
+  - last successful location sync.
+- Responder status uses heartbeat rather than GPS movement:
+  - LIVE: recent device heartbeat,
+  - DELAYED: heartbeat late,
+  - OFFLINE: heartbeat missing.
+- GPS freshness is displayed separately, so **stationary != disconnected**.
+- Forced GPS refresh when the position stream is quiet for too long.
+- Location stream automatically restarts after errors/completion.
+- Immediate heartbeat + fresh GPS + queue replay after connectivity recovery.
+- Offline GPS points retain their original capture timestamps.
+- Sender does not repeatedly hammer the API while it already knows the backend is offline; points are queued locally instead.
+- Moving route trail, direction, speed, accuracy and distance travelled on the responder map.
 
-### Trusted Circle / responder app
-- 3-second inbox refresh while the app is open.
-- Find-My-style **Live Track** screen.
-- In-app OpenStreetMap view with current marker and historical movement trail.
-- LIVE / DELAYED / LAST SEEN freshness state.
-- Keeps the last known marker when updates stop.
-- Last update time displayed in the phone's local timezone.
-- Accuracy, battery, network, speed and direction indicators.
-- Call button when the sender has provided a phone number.
-- Acknowledge button so the victim knows a real person is responding.
+### SMS fallback reliability
+- Internet/API remains first transport.
+- During an active SOS, sustained API loss can trigger one fallback SMS per outage.
+- Failed SMS preparation does not permanently suppress retry for the whole outage.
+- Retry attempts are throttled to avoid SMS spam.
+- Android checks:
+  - SEND_SMS permission,
+  - telephony/SMS capability,
+  - SIM readiness,
+  - default SMS subscription selection.
+- A **real TEST SMS** action is available from Safety Controls so the transport can be checked before danger.
+- SMS includes a maps link, time and battery information.
+- iOS uses the system Messages composer; iOS does not permit arbitrary silent SMS sending.
 
-### Trusted phone privacy
-- Users own and update their own E.164 phone number (`+countrycode...`).
-- A contact's phone number is **not disclosed while an invitation is pending**.
-- Phone number becomes available only after that user explicitly accepts the Trusted Circle relationship.
-- Active trusted phone numbers are cached in encrypted device storage so SMS fallback can still work when mobile data is unavailable.
+### Journey Guard
+- Start a safety journey with a destination label and expected travel time.
+- Only one active Journey Guard session per user.
+- Trusted Circle members can see active journeys in the Response tab.
+- Missed expected arrival is calculated server-side and shown as **OVERDUE**.
+- User can mark the journey safe or cancel it.
+- Journey Guard does not fabricate an SOS automatically; it creates a visible missed-check-in signal for trusted people.
 
-### Backend
-- FastAPI + SQLAlchemy + SQLite for the hackathon build.
-- Argon2 password hashing.
-- JWT authentication.
-- Persistent 64-character development JWT secret is generated automatically if `VIRANARI_JWT_SECRET` is not provided.
-- UTC-safe API serialization so Flutter can convert timestamps correctly to IST / local device time.
-- Explicit compatibility migrations for v1/v1.2 SQLite databases.
-- Audit events and API rate limiting inherited from v1.2.
-- 22 backend tests.
+### Safety Presence
+- Optional nearby-device radar.
+- Presence is opt-in and short-lived.
+- Exact presence coordinates are not persisted; server stores quantised coordinates only.
+- Nearby API returns no user name, phone number, account ID, or stable public identifier.
+- Client sees only approximate distance, coarse bearing and freshness.
+- Presence expires logically after 120 seconds without an update.
+- This is internet-backed presence in V1.4. It is **not ViraMesh/BLE** yet.
 
-## Important limitations
+### Cleaner UI
+- Home is centered around the SOS control rather than stacked feature cards.
+- Compact top status strip for server/network/battery/trusted-circle state.
+- Journey Guard appears as a slim status strip only when active.
+- Secondary features are three compact actions: Journey, Nearby, SMS Setup.
+- Technical diagnostics are hidden under an expandable section.
+- Trusted Circle and History are flat list layouts rather than card stacks.
+- Response screen uses a flat emergency list.
+- Live Track uses the map as the main surface with compact floating status/action panels.
 
-This is a hackathon prototype, not a certified emergency-service product.
+## Backend
 
-- No Firebase/APNs push yet. Recipient live updates are automatic while ViraNari is running/open.
-- Android direct SMS depends on SIM/service and `SEND_SMS` permission. SMS is not internet-free if there is no cellular network at all.
-- iOS does not silently send SMS; ViraNari opens the Messages composer for the user to approve.
-- OpenStreetMap tiles on the responder Live Track screen require network access unless an offline map layer is added later.
-- Background location behavior still depends on Android/iOS power-management policies and permissions.
-- ViraMesh/BLE multi-hop relay is **not** implemented in v1.3.
+- FastAPI
+- SQLAlchemy
+- SQLite for the hackathon prototype
+- Argon2 password hashing
+- JWT authentication
+- request throttling
+- audit events
+- idempotent SOS creation
+- compatibility migrations for V1/V1.2/V1.3 SQLite databases
+- 33 automated backend tests
 
----
-
-## Backend — local/VPS
+### Run locally / on VPS
 
 ```bash
 cd backend
@@ -72,98 +87,98 @@ cp .env.example .env
 python run.py
 ```
 
-Default backend port is **3000**.
-
-Health:
+Default port: `3000`.
 
 ```bash
 curl http://127.0.0.1:3000/health
 ```
 
-Docs:
+Swagger:
 
 ```text
 http://127.0.0.1:3000/docs
 ```
 
-For a VPS behind Nginx:
+For production-style VPS deployment, keep Uvicorn on `127.0.0.1:3000` behind Nginx/HTTPS. For a temporary direct-port demo, `0.0.0.0:3000` can be used with the firewall configured appropriately.
 
-```env
-VIRANARI_HOST=127.0.0.1
-VIRANARI_PORT=3000
-VIRANARI_DB_PATH=/root/Viranari/backend/data/viranari.db
-VIRANARI_JWT_SECRET=<64+ character random secret>
-```
-
-For a quick direct-port test you can use `VIRANARI_HOST=0.0.0.0`, but production should normally expose HTTPS through Nginx and leave Uvicorn bound to localhost.
-
----
-
-## Flutter — first setup on Arch/fish
+## Flutter setup on Arch / fish
 
 From project root:
 
 ```fish
 ./scripts/prepare_mobile.fish
+cd mobile
+flutter analyze
 ```
 
-Then start an emulator and run:
+Android emulator + local backend:
 
 ```fish
-cd mobile
-flutter devices
 flutter run --dart-define=VIRANARI_API_BASE=http://10.0.2.2:3000
 ```
 
-Against your VPS API:
+VPS:
 
 ```fish
 flutter run --dart-define=VIRANARI_API_BASE=https://api.example.com
 ```
 
-For a temporary direct-IP test:
+Temporary direct-IP test:
 
 ```fish
 flutter run --dart-define=VIRANARI_API_BASE=http://YOUR_VPS_IP:3000
 ```
 
-Use HTTPS for the final demo/release.
+Re-run `prepare_mobile.fish` when using this source package because V1.4 patches Android SMS capability checks and platform permissions.
 
-## Before testing SMS
+## Physical-device live tracking test
 
-1. Register both users with international-format numbers, e.g. `+919876543210`.
-2. Invite and accept the Trusted Circle relationship.
-3. Open the sender's Trusted Circle screen once while online so accepted numbers are securely cached.
-4. On Home enable **Prepare SMS fallback before danger** and grant the Android SMS permission.
-5. For a test, use Practice Mode first. Practice Mode deliberately does **not** send SMS.
-6. For a real transport test, use test phone numbers / team devices only.
+1. Device A and Device B sign in to separate ViraNari accounts.
+2. A invites B; B accepts.
+3. A starts SOS.
+4. B opens Response → Track.
+5. Keep A stationary for 60+ seconds.
+   - B should remain LIVE while heartbeats arrive.
+   - GPS age may increase independently.
+6. Walk with A.
+   - marker and trail should update,
+   - distance travelled should increase.
+7. Disable Wi-Fi **and mobile data** on A while leaving cellular/SMS service available.
+   - GPS points should queue locally,
+   - B transitions LIVE → DELAYED → OFFLINE,
+   - last location remains visible,
+   - SMS fallback can run if prepared.
+8. Restore internet.
+   - A sends a heartbeat immediately,
+   - queued GPS trail replays,
+   - fresh GPS is published,
+   - B returns to LIVE.
 
-## Find-My-style tracking test
+Turning Wi-Fi off alone may simply cause Android to switch to mobile data, so that is not a valid SMS-fallback outage test.
 
-On sender phone:
-1. Start SOS.
-2. Grant location permission; for strongest background behavior use `Allow all the time` where available.
-3. Move the emulator GPS coordinates or physically walk with the phone.
-4. Home should show changing `Phone GPS fix` and `Server synced` times.
+## SMS test checklist
 
-On trusted-contact phone:
-1. Open Inbox.
-2. Tap **Live Track**.
-3. Marker/trail refreshes every 3 seconds while the screen is open.
-4. Stop sender connectivity: status eventually changes from LIVE → DELAYED → LAST SEEN while preserving the last known marker.
-5. Restore internet: queued sender points replay to the server.
+Use a physical Android phone. The emulator cannot validate carrier SMS.
 
-## Backend tests
+- physical SIM/eSIM can send SMS,
+- airplane mode off,
+- default SMS SIM selected on dual-SIM phones,
+- ViraNari SMS permission granted,
+- both users have `+countrycode...` phone numbers,
+- Trusted Circle invitation accepted,
+- sender opened Trusted Circle while online so numbers were cached,
+- Safety Controls → SMS fallback enabled,
+- use **Send a real TEST SMS** before testing outage fallback.
 
-```bash
-cd backend
-pytest -q
-```
+## Current limitations
 
-Expected for this source release:
+V1.4 is a hackathon prototype, not a certified emergency-service product.
 
-```text
-22 passed
-```
+- No Firebase/APNs push notification service yet.
+- Journey Guard overdue status becomes visible when trusted users refresh/poll the app; it is not yet a push alarm.
+- Safety Presence is server-backed and app-open/periodic; ViraMesh BLE presence is planned for V2.
+- OpenStreetMap tiles require data unless an offline map package is added.
+- iOS background behavior differs from Android and needs device/TestFlight testing.
+- Verified Safe Nodes and Safety Compass are planned next, not faked in this release.
 
-See `UPGRADE_FROM_V1_2.md` before replacing an existing VPS deployment.
+See `UPGRADE_TO_V1_4.md`, `DEMO_CHECKLIST.md`, and `V1_4_FEATURES_FOR_PPT.md`.
