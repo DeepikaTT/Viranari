@@ -546,38 +546,6 @@ def test_27_v13_database_migrates_heartbeat_columns(tmp_path):
     assert row == ("2026-09-25 12:01:00", "2026-09-25 12:01:00", "2026-09-25 12:01:00")
 
 
-def test_28_safety_presence_is_anonymous_and_coarse(client):
-    a = register(client, "Asha", "asha@example.com")
-    b = register(client, "Maya", "maya@example.com")
-    update = client.post(
-        "/presence", headers=auth(a["access_token"]),
-        json={"device_id": "device-a-0001", "latitude": 17.385044, "longitude": 78.486671, "enabled": True},
-    )
-    assert update.status_code == 200
-    nearby = client.get(
-        "/presence/nearby?device_id=device-b-0001&latitude=17.3850&longitude=78.4867&radius_m=1000",
-        headers=auth(b["access_token"]),
-    )
-    assert nearby.status_code == 200
-    assert len(nearby.json()) == 1
-    point = nearby.json()[0]
-    assert set(point.keys()) == {"approx_distance_m", "bearing_deg", "age_seconds"}
-    assert point["approx_distance_m"] >= 50
-
-
-def test_29_disabled_presence_disappears(client):
-    a = register(client, "Asha", "asha@example.com")
-    b = register(client, "Maya", "maya@example.com")
-    client.post("/presence", headers=auth(a["access_token"]), json={"device_id": "device-a-0001", "latitude": 17.385, "longitude": 78.487, "enabled": True})
-    client.delete("/presence?device_id=device-a-0001", headers=auth(a["access_token"]))
-    nearby = client.get(
-        "/presence/nearby?device_id=device-b-0001&latitude=17.385&longitude=78.487&radius_m=1000",
-        headers=auth(b["access_token"]),
-    )
-    assert nearby.status_code == 200
-    assert nearby.json() == []
-
-
 def test_32_create_app_upgrades_existing_alert_schema_before_indexes(tmp_path):
     import sqlite3
 
@@ -616,24 +584,3 @@ def test_32_create_app_upgrades_existing_alert_schema_before_indexes(tmp_path):
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     conn.close()
     assert {"last_device_seen_at", "last_gps_fix_at", "last_location_sync_at"}.issubset(cols)
-    assert {"safety_presence_devices"}.issubset(tables)
-
-
-def test_34_presence_is_device_scoped_even_for_same_account(client):
-    user = register(client, "Asha", "asha@example.com")
-    token = user["access_token"]
-    assert client.post(
-        "/presence", headers=auth(token),
-        json={"device_id": "phone-one-0001", "latitude": 17.3850, "longitude": 78.4867, "enabled": True},
-    ).status_code == 200
-    assert client.post(
-        "/presence", headers=auth(token),
-        json={"device_id": "phone-two-0002", "latitude": 17.3854, "longitude": 78.4869, "enabled": True},
-    ).status_code == 200
-    nearby = client.get(
-        "/presence/nearby?device_id=phone-one-0001&latitude=17.3850&longitude=78.4867&radius_m=1000",
-        headers=auth(token),
-    )
-    assert nearby.status_code == 200
-    assert len(nearby.json()) == 1
-    assert set(nearby.json()[0]) == {"approx_distance_m", "bearing_deg", "age_seconds"}

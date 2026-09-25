@@ -4,7 +4,6 @@ import 'package:flutter/services.dart';
 import '../core/api_client.dart';
 import '../core/models.dart';
 import '../core/session.dart';
-import '../core/storage.dart';
 import '../core/theme.dart';
 
 class ContactsScreen extends StatefulWidget {
@@ -16,7 +15,6 @@ class ContactsScreen extends StatefulWidget {
 }
 
 class _ContactsScreenState extends State<ContactsScreen> {
-  final _phoneStore = TrustedPhoneStore();
   List<TrustedContact> _contacts = const [];
   bool _loading = true;
   String? _error;
@@ -34,7 +32,6 @@ class _ContactsScreenState extends State<ContactsScreen> {
     });
     try {
       final contacts = await widget.session.api.contacts();
-      await _phoneStore.saveFromContacts(contacts);
       if (mounted) setState(() => _contacts = contacts);
     } on ApiException catch (e) {
       if (mounted) setState(() => _error = e.message);
@@ -50,7 +47,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Your SMS/call number'),
+        title: const Text('Your contact number'),
         content: TextField(
           controller: controller,
           keyboardType: TextInputType.phone,
@@ -113,7 +110,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('Share this one-time code. Their phone number stays private until they accept the Trusted Circle invitation.'),
+              const Text('Share this one-time code. Their contact details stay private until they accept the Trusted Circle invitation.'),
               const SizedBox(height: 16),
               SelectableText(contact.inviteToken ?? '', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: ViraColors.plum)),
             ],
@@ -162,7 +159,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Remove trusted contact?'),
-        content: Text('${contact.name} will not receive future SOS alerts or SMS fallback from you.'),
+        content: Text('${contact.name} will not receive future SOS alerts from you.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Keep')),
           FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Remove')),
@@ -183,7 +180,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
         children: [
           Text('Trusted Circle', style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w900, color: ViraColors.plum)),
           const SizedBox(height: 5),
-          const Text('Only accepted people receive your SOS and become eligible for SMS fallback.', style: TextStyle(color: ViraColors.mutedPlum)),
+          const Text('Only people who explicitly accept your invitation can receive your SOS.', style: TextStyle(color: ViraColors.mutedPlum)),
           const SizedBox(height: 18),
           ListTile(
             contentPadding: EdgeInsets.zero,
@@ -231,7 +228,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text('${c.name} · ${c.email}'),
-                          if (c.phoneE164 != null) Text('SMS ${c.phoneE164}', style: const TextStyle(color: ViraColors.success, fontWeight: FontWeight.w700)),
+                          if (c.phoneE164 != null) Text('Phone ${c.phoneE164}', style: const TextStyle(color: ViraColors.success, fontWeight: FontWeight.w700)),
                         ],
                       ),
                       trailing: PopupMenuButton<String>(

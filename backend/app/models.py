@@ -119,24 +119,6 @@ class AlertLocation(Base):
     alert: Mapped[Alert] = relationship(back_populates="locations")
 
 
-class SafetyPresenceDevice(Base):
-    """Per-installation anonymous Safety Presence.
-
-    A device-scoped random identifier lets two phones signed into the same
-    account appear as separate nearby devices. The identifier is never returned
-    by the nearby API, and only coarse coordinates are stored.
-    """
-
-    __tablename__ = "safety_presence_devices"
-
-    device_id: Mapped[str] = mapped_column(String(80), primary_key=True)
-    owner_user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    coarse_latitude: Mapped[float] = mapped_column(Float)
-    coarse_longitude: Mapped[float] = mapped_column(Float)
-    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
-
-
 class AuditEvent(Base):
     __tablename__ = "audit_events"
 

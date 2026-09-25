@@ -1,7 +1,6 @@
 import 'dart:convert';
 
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:uuid/uuid.dart';
 
 import 'models.dart';
 
@@ -32,47 +31,6 @@ class QueueStore {
     final items = await load();
     if (items.any((e) => e.idempotencyKey == alert.idempotencyKey)) return;
     await save([...items, alert]);
-  }
-}
-
-class TrustedPhoneStore {
-  static const _key = 'viranari_trusted_phones_v13';
-  final FlutterSecureStorage _secure = const FlutterSecureStorage();
-
-  Future<void> saveFromContacts(List<TrustedContact> contacts) async {
-    final phones = contacts
-        .where((c) => c.status == 'active' && c.phoneE164 != null)
-        .map((c) => c.phoneE164!)
-        .toSet()
-        .toList();
-    await _secure.write(key: _key, value: jsonEncode(phones));
-  }
-
-  Future<List<String>> load() async {
-    final raw = await _secure.read(key: _key);
-    if (raw == null || raw.isEmpty) return const [];
-    return (jsonDecode(raw) as List<dynamic>).map((e) => e.toString()).toList();
-  }
-}
-
-class SafetySettingsStore {
-  static const _smsKey = 'viranari_sms_fallback_enabled_v13';
-  static const _presenceKey = 'viranari_safety_presence_enabled_v14';
-  static const _deviceIdKey = 'viranari_installation_id_v141';
-  final FlutterSecureStorage _secure = const FlutterSecureStorage();
-
-  Future<bool> smsFallbackEnabled() async => (await _secure.read(key: _smsKey)) == '1';
-  Future<void> setSmsFallbackEnabled(bool value) => _secure.write(key: _smsKey, value: value ? '1' : '0');
-
-  Future<bool> safetyPresenceEnabled() async => (await _secure.read(key: _presenceKey)) == '1';
-  Future<void> setSafetyPresenceEnabled(bool value) => _secure.write(key: _presenceKey, value: value ? '1' : '0');
-
-  Future<String> installationId() async {
-    final existing = await _secure.read(key: _deviceIdKey);
-    if (existing != null && existing.isNotEmpty) return existing;
-    final created = const Uuid().v4();
-    await _secure.write(key: _deviceIdKey, value: created);
-    return created;
   }
 }
 

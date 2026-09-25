@@ -1,12 +1,5 @@
-# Victim-first roadmap after V1.4.1
+# Victim-first roadmap after V1.4.2
 
-V1.4.1 deliberately narrows the product around immediate danger:
+V1.4.2 freezes the emergency core around one question: **can a trusted person reliably find and respond to the victim?**
 
-- reliable SOS
-- a visible live map
-- trusted human response
-- SMS fallback when mobile data fails
-- anonymous nearby safety presence
-- last-known-location retention and reconnect recovery
-
-Next milestones should improve silent activation, verified Safe Nodes, responder escalation and eventually ViraMesh. Avoid adding features that increase the number of decisions a victim must make during an emergency.
+Only after live tracking/reconnect passes repeated two-phone tests should new layers be added. Candidate future work includes verified safe nodes, a simple safety compass, stealth activation, platform-approved push notifications, and eventually offline device relay/ViraMesh.

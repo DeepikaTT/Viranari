@@ -1,32 +1,39 @@
-# ViraNari V1.4.1 UI direction
+# ViraNari V1.4.2 UI direction
 
-The interface is intentionally flatter and map-first. Avoid stacking many cards.
+The UI returns to the simpler V1.3 visual hierarchy.
 
-## Bottom navigation
+## Home
 
-1. Home — SOS and only essential safety state
-2. Map — persistent live map, marker and route trail
-3. Circle — trusted contacts
-4. Response — incoming emergency alerts
+1. `Live Safety` heading + small Practice/Test toggle
+2. Compact status chips: server, network, battery, trusted people
+3. Large press-and-hold SOS control
+4. One short emergency/status message
+5. One `Live location` panel
+6. One emergency-session panel only when an SOS exists
 
-SOS history is available from the top-right menu rather than taking a permanent bottom-navigation slot.
+No nearby radar, no SMS controls, no journey controls, and no large settings bottom sheet.
 
-## Home hierarchy
+## Navigation
 
-- compact server/network/battery/trusted strip
-- one dominant press-and-hold SOS control
-- active-emergency summary only when needed
-- two secondary actions: Nearby and SMS
-- technical diagnostics collapsed by default
+- Home
+- Map
+- Circle
+- Inbox
 
-## Live Map
+History lives in the overflow menu.
 
-The map is never hidden behind diagnostic cards. During an emergency it shows the current marker, trail, heartbeat/GPS freshness, battery, accuracy and distance travelled. With no active emergency it can show the current phone position.
+## Map
 
-## Colors
+Map remains core. It shows the active sender/recipient emergency, moving marker, trail, liveness, battery, direction, distance and accuracy. When there is no active emergency it shows the current phone position.
 
-- deep plum/teal identity
-- SOS pink/red only for emergency emphasis
-- green for confirmed live/healthy state
-- warm neutral surfaces
-- minimal borders and shadows
+## Brand
+
+- Background: `#FFF9F0`
+- Surface: `#FFFCF7`
+- Deep teal: `#073F42`
+- Midnight teal: `#052E31`
+- Lotus pink: `#D95D83`
+- Emergency red: `#D93645`
+- Antique gold: `#C9963B`
+- Success: `#23845D`
+

@@ -339,18 +339,3 @@ class QueuedLocationUpdate {
         recordedLocallyAt: parseApiTime(json['recorded_locally_at'] as String),
       );
 }
-
-
-class PresencePoint {
-  const PresencePoint({required this.approxDistanceM, required this.bearingDeg, required this.ageSeconds});
-  final int approxDistanceM;
-  final int bearingDeg;
-  final int ageSeconds;
-
-  factory PresencePoint.fromJson(Map<String, dynamic> json) => PresencePoint(
-        approxDistanceM: json['approx_distance_m'] as int,
-        bearingDeg: json['bearing_deg'] as int,
-        ageSeconds: json['age_seconds'] as int,
-      );
-}
-

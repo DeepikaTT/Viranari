@@ -22,17 +22,9 @@ cp "$TMP/analysis_options.yaml" "$MOBILE/analysis_options.yaml"
 python3 "$ROOT/scripts/patch_mobile.py"; or exit 1
 flutter pub get; or exit 1
 
-if not grep -q "android.permission.SEND_SMS" "$MOBILE/android/app/src/main/AndroidManifest.xml"
-    echo "ERROR: SEND_SMS was not injected into AndroidManifest.xml"
-    exit 1
-end
-
-
 echo
-echo "ViraNari v1.4.1 mobile wrapper is ready."
+echo "ViraNari v1.4.2 mobile wrapper is ready."
 echo "Android emulator local-backend URL defaults to http://10.0.2.2:3000"
 echo "Local: flutter run --dart-define=VIRANARI_API_BASE=http://10.0.2.2:3000"
 echo "VPS:   flutter run --dart-define=VIRANARI_API_BASE=https://YOUR-API-DOMAIN"
-
-echo "IMPORTANT: SMS/native changes require a full rebuild/reinstall; hot reload is not enough."
-echo "Recommended: flutter clean; flutter run --dart-define=VIRANARI_API_BASE=https://YOUR-API-DOMAIN"
+echo "Location/native permission changes require a full rebuild if the Android wrapper already existed."

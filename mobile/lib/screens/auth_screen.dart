@@ -104,7 +104,7 @@ class _AuthScreenState extends State<AuthScreen> {
                       textInputAction: TextInputAction.next,
                       decoration: const InputDecoration(
                         labelText: 'Phone (+country code)',
-                        helperText: 'Used only for consented SMS/call fallback.',
+                        helperText: 'Used only so trusted contacts can call you during an emergency.',
                         prefixIcon: Icon(Icons.phone_outlined),
                       ),
                     ),

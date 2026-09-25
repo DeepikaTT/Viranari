@@ -1,7 +1,7 @@
 from pathlib import Path
 
-root = Path(__file__).resolve().parents[1] / "mobile"
-manifest = root / "android/app/src/main/AndroidManifest.xml"
+root = Path(__file__).resolve().parents[1] / 'mobile'
+manifest = root / 'android/app/src/main/AndroidManifest.xml'
 if manifest.exists():
     text = manifest.read_text()
     permissions = [
@@ -12,184 +12,45 @@ if manifest.exists():
         '<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />',
         '<uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />',
         '<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />',
-        '<uses-permission android:name="android.permission.SEND_SMS" />',
     ]
-    insert = "\n    ".join(p for p in permissions if p not in text)
+    insert = '\n    '.join(p for p in permissions if p not in text)
     if insert:
-        marker = text.find(">", text.find("<manifest"))
-        text = text[: marker + 1] + "\n    " + insert + text[marker + 1 :]
+        marker = text.find('>', text.find('<manifest'))
+        text = text[: marker + 1] + '\n    ' + insert + text[marker + 1 :]
+    # Explicitly remove the abandoned SMS permission if upgrading an existing wrapper.
+    text = text.replace('    <uses-permission android:name="android.permission.SEND_SMS" />\n', '')
     text = text.replace('android:label="viranari_app"', 'android:label="ViraNari"')
     if 'android:usesCleartextTraffic=' not in text:
         text = text.replace('<application\n', '<application\n        android:usesCleartextTraffic="true"\n', 1)
     manifest.write_text(text)
 
-main_activity = root / "android/app/src/main/kotlin/com/viranari/viranari_app/MainActivity.kt"
+main_activity = root / 'android/app/src/main/kotlin/com/viranari/viranari_app/MainActivity.kt'
 if main_activity.exists():
-    main_activity.write_text(r'''package com.viranari.viranari_app
+    main_activity.write_text('''package com.viranari.viranari_app\n\nimport io.flutter.embedding.android.FlutterActivity\n\nclass MainActivity : FlutterActivity()\n''')
 
-import android.Manifest
-import android.content.Context
-import android.content.Intent
-import android.content.pm.PackageManager
-import android.os.Build
-import android.provider.Settings
-import android.telephony.SmsManager
-import android.telephony.SubscriptionManager
-import android.telephony.TelephonyManager
-import androidx.core.app.ActivityCompat
-import androidx.core.content.ContextCompat
-import io.flutter.embedding.android.FlutterActivity
-import io.flutter.embedding.engine.FlutterEngine
-import io.flutter.plugin.common.MethodChannel
-
-class MainActivity : FlutterActivity() {
-    private val smsChannel = "viranari/sms"
-    private val smsPermissionRequestCode = 9141
-    private var pendingSmsPermissionResult: MethodChannel.Result? = null
-
-    private fun permissionDeclared(permission: String): Boolean {
-        return try {
-            val info = if (Build.VERSION.SDK_INT >= 33) {
-                packageManager.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(PackageManager.GET_PERMISSIONS.toLong()))
-            } else {
-                @Suppress("DEPRECATION")
-                packageManager.getPackageInfo(packageName, PackageManager.GET_PERMISSIONS)
-            }
-            info.requestedPermissions?.contains(permission) == true
-        } catch (_: Exception) {
-            false
-        }
-    }
-
-    private fun smsCapability(): Map<String, Any> {
-        val capable = packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY_MESSAGING)
-        val telephony = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
-        val simReady = try { telephony.simState == TelephonyManager.SIM_STATE_READY } catch (_: Exception) { false }
-        val defaultSubId = SubscriptionManager.getDefaultSmsSubscriptionId()
-        val declared = permissionDeclared(Manifest.permission.SEND_SMS)
-        val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.SEND_SMS) == PackageManager.PERMISSION_GRANTED
-        return mapOf(
-            "capable" to capable,
-            "sim_ready" to simReady,
-            "default_subscription_id" to defaultSubId,
-            "subscription_ready" to (defaultSubId != SubscriptionManager.INVALID_SUBSCRIPTION_ID),
-            "permission_declared" to declared,
-            "permission_granted" to granted
-        )
-    }
-
-    private fun requestSmsPermission(result: MethodChannel.Result) {
-        if (!permissionDeclared(Manifest.permission.SEND_SMS)) {
-            result.success(false)
-            return
-        }
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.SEND_SMS) == PackageManager.PERMISSION_GRANTED) {
-            result.success(true)
-            return
-        }
-        if (pendingSmsPermissionResult != null) {
-            result.error("SMS_PERMISSION_BUSY", "An SMS permission request is already open.", null)
-            return
-        }
-        pendingSmsPermissionResult = result
-        ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.SEND_SMS), smsPermissionRequestCode)
-    }
-
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == smsPermissionRequestCode) {
-            val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
-            pendingSmsPermissionResult?.success(granted)
-            pendingSmsPermissionResult = null
-        }
-    }
-
-    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
-        super.configureFlutterEngine(flutterEngine)
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, smsChannel).setMethodCallHandler { call, result ->
-            when (call.method) {
-                "smsCapability" -> result.success(smsCapability())
-                "requestSmsPermission" -> requestSmsPermission(result)
-                "openSmsSettings" -> {
-                    try {
-                        startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS))
-                        result.success(null)
-                    } catch (e: Exception) {
-                        result.error("SMS_SETTINGS", e.message ?: "Could not open SIM settings", null)
-                    }
-                }
-                "sendSms" -> {
-                    if (ContextCompat.checkSelfPermission(this, Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) {
-                        result.error("SMS_PERMISSION", "SEND_SMS permission is not granted.", null)
-                        return@setMethodCallHandler
-                    }
-
-                    val capability = smsCapability()
-                    if (capability["capable"] != true || capability["sim_ready"] != true) {
-                        result.error("SMS_UNAVAILABLE", "No SMS-capable SIM is ready.", null)
-                        return@setMethodCallHandler
-                    }
-                    if (capability["subscription_ready"] != true) {
-                        result.error("SMS_SUBSCRIPTION", "No default SMS SIM is selected. Choose a default SMS SIM in Android settings.", null)
-                        return@setMethodCallHandler
-                    }
-
-                    val recipients = call.argument<List<String>>("recipients") ?: emptyList()
-                    val message = call.argument<String>("message") ?: ""
-                    if (recipients.isEmpty() || message.isBlank()) {
-                        result.error("SMS_ARGUMENTS", "Recipients and message are required.", null)
-                        return@setMethodCallHandler
-                    }
-
-                    try {
-                        val subId = SubscriptionManager.getDefaultSmsSubscriptionId()
-                        @Suppress("DEPRECATION")
-                        val smsManager = SmsManager.getSmsManagerForSubscriptionId(subId)
-                        var dispatched = 0
-                        recipients.distinct().forEach { number ->
-                            val parts = smsManager.divideMessage(message)
-                            if (parts.size > 1) {
-                                smsManager.sendMultipartTextMessage(number, null, parts, null, null)
-                            } else {
-                                smsManager.sendTextMessage(number, null, message, null, null)
-                            }
-                            dispatched++
-                        }
-                        result.success(dispatched)
-                    } catch (e: Exception) {
-                        result.error("SMS_FAILED", e.message ?: "SMS dispatch failed", null)
-                    }
-                }
-                else -> result.notImplemented()
-            }
-        }
-    }
-}
-''')
-
-plist = root / "ios/Runner/Info.plist"
+plist = root / 'ios/Runner/Info.plist'
 if plist.exists():
     text = plist.read_text()
     additions = []
-    if "NSLocationWhenInUseUsageDescription" not in text:
+    if 'NSLocationWhenInUseUsageDescription' not in text:
         additions.append(
-            "\t<key>NSLocationWhenInUseUsageDescription</key>\n"
-            "\t<string>ViraNari uses your location when you trigger an SOS so trusted contacts can find you.</string>\n"
+            '\t<key>NSLocationWhenInUseUsageDescription</key>\n'
+            '\t<string>ViraNari uses your location when you trigger an SOS so trusted contacts can find you.</string>\n'
         )
-    if "NSLocationAlwaysAndWhenInUseUsageDescription" not in text:
+    if 'NSLocationAlwaysAndWhenInUseUsageDescription' not in text:
         additions.append(
-            "\t<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>\n"
-            "\t<string>During an active emergency, ViraNari can continue sharing your live location with your trusted circle.</string>\n"
+            '\t<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>\n'
+            '\t<string>During an active emergency, ViraNari can continue sharing your live location with your trusted circle.</string>\n'
         )
-    if "UIBackgroundModes" not in text:
+    if 'UIBackgroundModes' not in text:
         additions.append(
-            "\t<key>UIBackgroundModes</key>\n"
-            "\t<array>\n"
-            "\t\t<string>location</string>\n"
-            "\t</array>\n"
+            '\t<key>UIBackgroundModes</key>\n'
+            '\t<array>\n'
+            '\t\t<string>location</string>\n'
+            '\t</array>\n'
         )
     if additions:
-        text = text.replace("</dict>", "".join(additions) + "</dict>", 1)
+        text = text.replace('</dict>', ''.join(additions) + '</dict>', 1)
         plist.write_text(text)
 
-print("Mobile platform files patched for ViraNari v1.4.1 Live Map hotfix.")
+print('Mobile platform files patched for ViraNari v1.4.2 Core Restore.')

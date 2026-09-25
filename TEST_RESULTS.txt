@@ -1,10 +1,6 @@
-ViraNari V1.4.1 backend validation
-==================================
-31 automated backend tests passed.
+ViraNari V1.4.2 backend validation
 
-Covered areas include authentication, trusted contacts, SOS idempotency,
-delivery/acknowledgement, live location, heartbeat liveness, SQLite upgrades,
-UTC timestamp handling, access control, and device-scoped Safety Presence.
+28 backend automated tests passed in the build environment.
+Coverage includes authentication, Trusted Circle consent, SOS idempotency, delivery and acknowledgement, offline retry semantics, live-location timeline, batch replay with original timestamps, heartbeat liveness, UTC timestamp handling, access control, persistence, and schema compatibility.
 
-Flutter/Android compilation must be run on the user's Arch Flutter environment
-because Flutter is not installed in the generation container.
+Flutter SDK is not installed in the packaging environment, so run `flutter analyze` and a real Android build on the Arch development machine before demo use.

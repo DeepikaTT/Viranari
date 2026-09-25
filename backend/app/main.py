@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import math
 import secrets
 from collections import defaultdict, deque
 from threading import Lock
@@ -9,7 +8,7 @@ from time import monotonic
 from datetime import datetime, timedelta, timezone
 
 import jwt
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import and_, select
@@ -25,7 +24,6 @@ from .models import (
     AlertRecipient,
     AlertState,
     ContactStatus,
-    SafetyPresenceDevice,
     TrustedContact,
     User,
     utcnow,
@@ -46,8 +44,6 @@ from .schemas import (
     LoginIn,
     MessageOut,
     PhoneUpdateIn,
-    PresencePointOut,
-    PresenceUpdateIn,
     RecipientStatusOut,
     RegisterIn,
     TokenOut,
@@ -90,10 +86,10 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
 
     app = FastAPI(
         title="ViraNari API",
-        version="1.4.1",
+        version="1.4.2",
         description=(
             "Emergency-response API with consent-based trusted contacts, delivery receipts, "
-            "idempotent offline retry, heartbeat-based live safety, SMS fallback, live map tracking, and privacy-preserving device-based Safety Presence."
+            "idempotent offline retry, heartbeat-based live safety, and Find-My-style live map tracking."
         ),
     )
     app.state.engine = engine
@@ -210,7 +206,7 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "service": "viranari-api", "version": "1.4.1"}
+        return {"status": "ok", "service": "viranari-api", "version": "1.4.2"}
 
     @app.post("/auth/register", response_model=TokenOut, status_code=201)
     def register(payload: RegisterIn, db: Session = Depends(get_db)):
@@ -245,7 +241,7 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
         db: Session = Depends(get_db),
     ):
         current.phone_e164 = payload.phone_e164
-        audit(db, "phone_updated", current.id, current.id, "SMS fallback contact number updated")
+        audit(db, "phone_updated", current.id, current.id, "Trusted contact phone number updated")
         db.commit()
         db.refresh(current)
         return user_out(current)
@@ -711,104 +707,7 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
         db.commit()
         return MessageOut(message="Alert acknowledged")
 
-    # ---------- V1.4 Safety Presence ----------
-    def _quantise(value: float) -> float:
-        # ~110 m latitude cells. Exact coordinates are never stored.
-        return round(value, 3)
-
-    def _distance_and_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> tuple[float, float]:
-        r = 6_371_000.0
-        p1, p2 = math.radians(lat1), math.radians(lat2)
-        dp = math.radians(lat2 - lat1)
-        dl = math.radians(lon2 - lon1)
-        a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-        d = 2 * r * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-        y = math.sin(dl) * math.cos(p2)
-        x = math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dl)
-        bearing = (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
-        return d, bearing
-
-    @app.post("/presence", response_model=MessageOut)
-    def update_presence(
-        payload: PresenceUpdateIn,
-        current: User = Depends(get_current_user),
-        db: Session = Depends(get_db),
-    ):
-        # Presence is keyed by installation rather than account. This lets two
-        # phones logged into the same test account still appear as two devices.
-        presence = db.get(SafetyPresenceDevice, payload.device_id)
-        now = utcnow()
-        if presence is None:
-            presence = SafetyPresenceDevice(
-                device_id=payload.device_id,
-                owner_user_id=current.id,
-                coarse_latitude=_quantise(payload.latitude),
-                coarse_longitude=_quantise(payload.longitude),
-                enabled=payload.enabled,
-                last_seen_at=now,
-            )
-            db.add(presence)
-        else:
-            # The installation ID survives logout. If the same physical phone
-            # signs into another account, transfer the anonymous presence row to
-            # the currently authenticated owner instead of making presence fail.
-            presence.owner_user_id = current.id
-            presence.coarse_latitude = _quantise(payload.latitude)
-            presence.coarse_longitude = _quantise(payload.longitude)
-            presence.enabled = payload.enabled
-            presence.last_seen_at = now
-        db.commit()
-        return MessageOut(message="Safety Presence updated" if payload.enabled else "Safety Presence disabled")
-
-    @app.delete("/presence", response_model=MessageOut)
-    def disable_presence(
-        device_id: str = Query(min_length=8, max_length=80),
-        current: User = Depends(get_current_user),
-        db: Session = Depends(get_db),
-    ):
-        presence = db.get(SafetyPresenceDevice, device_id)
-        if presence is not None and presence.owner_user_id == current.id:
-            presence.enabled = False
-            presence.last_seen_at = utcnow()
-            db.commit()
-        return MessageOut(message="Safety Presence disabled")
-
-    @app.get("/presence/nearby", response_model=list[PresencePointOut])
-    def nearby_presence(
-        device_id: str = Query(min_length=8, max_length=80),
-        latitude: float = Query(ge=-90, le=90),
-        longitude: float = Query(ge=-180, le=180),
-        radius_m: int = Query(default=1500, ge=100, le=3000),
-        current: User = Depends(get_current_user),
-        db: Session = Depends(get_db),
-    ):
-        now = utcnow()
-        cutoff = now - timedelta(seconds=180)
-        rows = db.scalars(
-            select(SafetyPresenceDevice).where(
-                and_(
-                    SafetyPresenceDevice.enabled.is_(True),
-                    SafetyPresenceDevice.device_id != device_id,
-                    SafetyPresenceDevice.last_seen_at >= cutoff,
-                )
-            )
-        ).all()
-        out: list[PresencePointOut] = []
-        for row in rows:
-            distance, bearing = _distance_and_bearing(latitude, longitude, row.coarse_latitude, row.coarse_longitude)
-            if distance > radius_m:
-                continue
-            seen = ensure_utc(row.last_seen_at)
-            age = max(0, int((now - seen).total_seconds()))
-            out.append(PresencePointOut(
-                approx_distance_m=max(50, int(round(distance / 50.0) * 50)),
-                bearing_deg=int(round(bearing / 45.0) * 45) % 360,
-                age_seconds=age,
-            ))
-        out.sort(key=lambda p: p.approx_distance_m)
-        return out[:20]
-
-    # Journey Guard was intentionally removed from the V1.4.1 product surface.
+    # Journey Guard was intentionally removed from the V1.4.2 product surface.
     # The legacy table is retained for non-destructive database compatibility.
 
     @app.get("/audit/recent", response_model=list[AuditEventOut])

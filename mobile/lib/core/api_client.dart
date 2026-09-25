@@ -233,21 +233,5 @@ class ApiClient {
 
   Future<void> acknowledge(String alertId) async => _post('/alerts/$alertId/acknowledge', const {});
 
-  Future<void> updatePresence({required String deviceId, required double latitude, required double longitude, bool enabled = true}) async {
-    await _post('/presence', {'device_id': deviceId, 'latitude': latitude, 'longitude': longitude, 'enabled': enabled});
-  }
 
-  Future<void> disablePresence(String deviceId) async {
-    await _delete('/presence?device_id=${Uri.encodeQueryComponent(deviceId)}');
-  }
-
-  Future<List<PresencePoint>> nearbyPresence({
-    required String deviceId,
-    required double latitude,
-    required double longitude,
-    int radiusM = 1500,
-  }) async =>
-      (await _get('/presence/nearby?device_id=${Uri.encodeQueryComponent(deviceId)}&latitude=$latitude&longitude=$longitude&radius_m=$radiusM') as List<dynamic>)
-          .map((e) => PresencePoint.fromJson(e as Map<String, dynamic>))
-          .toList();
 }

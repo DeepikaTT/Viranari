@@ -161,19 +161,6 @@ class InboxAlertOut(BaseModel):
     last_location_sync_at: datetime | None
 
 
-class PresenceUpdateIn(BaseModel):
-    device_id: str = Field(min_length=8, max_length=80)
-    latitude: float = Field(ge=-90, le=90)
-    longitude: float = Field(ge=-180, le=180)
-    enabled: bool = True
-
-
-class PresencePointOut(BaseModel):
-    approx_distance_m: int
-    bearing_deg: int
-    age_seconds: int
-
-
 class MessageOut(BaseModel):
     message: str
 
