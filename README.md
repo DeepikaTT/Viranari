@@ -1,184 +1,131 @@
-# ViraNari V1.4 — Reliable Response
+# ViraNari V1.4.1 — Live Map Reliability Hotfix
 
-V1.4 turns the V1.3 Live Safety prototype into a more reliable, less cluttered emergency-response build. The central change is architectural: **device liveness is now separate from GPS freshness**. A victim who is standing still can remain LIVE because the phone sends heartbeats even if its coordinates do not change.
+V1.4.1 is a focused correction release based on real-device testing. It removes Journey Guard from the product, restores the map as a first-class navigation tab, makes emergency GPS refresh much more aggressive, adds useful SMS permission/SIM diagnostics, and changes Safety Presence from account-based to device-based presence.
 
-## Implemented in V1.4
+## What changed from V1.4
 
-### Reliable live safety
-- Heartbeat endpoint and client heartbeat every ~10 seconds while an SOS is active.
-- Separate timestamps for:
-  - last device heartbeat,
-  - last GPS fix,
-  - last successful location sync.
-- Responder status uses heartbeat rather than GPS movement:
-  - LIVE: recent device heartbeat,
-  - DELAYED: heartbeat late,
-  - OFFLINE: heartbeat missing.
-- GPS freshness is displayed separately, so **stationary != disconnected**.
-- Forced GPS refresh when the position stream is quiet for too long.
-- Location stream automatically restarts after errors/completion.
-- Immediate heartbeat + fresh GPS + queue replay after connectivity recovery.
-- Offline GPS points retain their original capture timestamps.
-- Sender does not repeatedly hammer the API while it already knows the backend is offline; points are queued locally instead.
-- Moving route trail, direction, speed, accuracy and distance travelled on the responder map.
+### 1. Journey Guard removed
+Journey Guard is removed from the Flutter UI, responder polling, mobile API client, FastAPI routes, and fresh database model. Existing VPS databases are not destructively altered; an old `journeys` table may remain unused after upgrading.
 
-### SMS fallback reliability
-- Internet/API remains first transport.
-- During an active SOS, sustained API loss can trigger one fallback SMS per outage.
-- Failed SMS preparation does not permanently suppress retry for the whole outage.
-- Retry attempts are throttled to avoid SMS spam.
-- Android checks:
-  - SEND_SMS permission,
-  - telephony/SMS capability,
-  - SIM readiness,
-  - default SMS subscription selection.
-- A **real TEST SMS** action is available from Safety Controls so the transport can be checked before danger.
-- SMS includes a maps link, time and battery information.
-- iOS uses the system Messages composer; iOS does not permit arbitrary silent SMS sending.
+### 2. Map is a core tab again
+The bottom navigation is now:
 
-### Journey Guard
-- Start a safety journey with a destination label and expected travel time.
-- Only one active Journey Guard session per user.
-- Trusted Circle members can see active journeys in the Response tab.
-- Missed expected arrival is calculated server-side and shown as **OVERDUE**.
-- User can mark the journey safe or cancel it.
-- Journey Guard does not fabricate an SOS automatically; it creates a visible missed-check-in signal for trusted people.
+- Home
+- Map
+- Circle
+- Response
 
-### Safety Presence
-- Optional nearby-device radar.
-- Presence is opt-in and short-lived.
-- Exact presence coordinates are not persisted; server stores quantised coordinates only.
-- Nearby API returns no user name, phone number, account ID, or stable public identifier.
-- Client sees only approximate distance, coarse bearing and freshness.
-- Presence expires logically after 120 seconds without an update.
-- This is internet-backed presence in V1.4. It is **not ViraMesh/BLE** yet.
+The Map tab always exists. During an active SOS it follows the live emergency marker and trail. A trusted contact automatically sees the newest active emergency they are responding to. With no active emergency it shows the current phone position when permission is available.
 
-### Cleaner UI
-- Home is centered around the SOS control rather than stacked feature cards.
-- Compact top status strip for server/network/battery/trusted-circle state.
-- Journey Guard appears as a slim status strip only when active.
-- Secondary features are three compact actions: Journey, Nearby, SMS Setup.
-- Technical diagnostics are hidden under an expandable section.
-- Trusted Circle and History are flat list layouts rather than card stacks.
-- Response screen uses a flat emergency list.
-- Live Track uses the map as the main surface with compact floating status/action panels.
+The dedicated responder Live Safety map remains available from Response -> Track.
+
+### 3. Faster Find-My-style location updates
+During an active SOS:
+
+- Android location stream requests `bestForNavigation`
+- `distanceFilter = 0`
+- requested stream interval = 5 seconds
+- liveness heartbeat = 5 seconds
+- if no fresh GPS fix is seen for ~8 seconds, the app requests an explicit current position
+- responder maps refresh every 3 seconds
+- GPS and server liveness remain separate
+
+Android/iOS plugin settings are deliberately created without forcing `const`, avoiding the package-version compile issue seen in earlier builds.
+
+### 4. SMS setup diagnostics and native permission request
+V1.4.1 no longer collapses every SMS problem into "SMS fallback is not ready".
+
+Diagnostics separately show:
+
+- SEND_SMS declared in installed APK
+- SMS runtime permission granted
+- phone supports SMS telephony
+- SIM/eSIM is ready
+- default SMS subscription is selected
+
+`Prepare SMS` now requests `SEND_SMS` through the Android activity itself. Buttons open App Settings and SIM/Wireless Settings for recovery.
+
+**Important:** Android manifest and Kotlin changes require a full rebuild/reinstall. Hot reload cannot add a permission to an APK that is already installed.
+
+### 5. Safety Presence dots fixed for multiple phones
+V1.4 keyed anonymous presence by account user ID. That meant two phones signed into the same test account overwrote the same presence row and could never see one another.
+
+V1.4.1 uses an encrypted-local installation UUID and a server-side `safety_presence_devices` table. The nearby API excludes only the requesting installation, not every phone signed into the same account.
+
+The Presence screen also:
+
+- republishes while open
+- refreshes about every 6 seconds
+- keeps data short-lived
+- still returns only coarse distance/bearing/age
+- never returns another device's account, phone number, device ID, or exact coordinates
 
 ## Backend
 
-- FastAPI
-- SQLAlchemy
-- SQLite for the hackathon prototype
-- Argon2 password hashing
-- JWT authentication
-- request throttling
-- audit events
-- idempotent SOS creation
-- compatibility migrations for V1/V1.2/V1.3 SQLite databases
-- 33 automated backend tests
+Python / FastAPI / SQLAlchemy / SQLite prototype backend.
 
-### Run locally / on VPS
+Run:
 
 ```bash
 cd backend
-python3 -m venv .venv
-source .venv/bin/activate
+python -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env
 python run.py
 ```
 
-Default port: `3000`.
+Default:
+
+```text
+http://0.0.0.0:3000
+```
+
+Health:
 
 ```bash
 curl http://127.0.0.1:3000/health
 ```
 
-Swagger:
+Expected version: `1.4.1`.
 
-```text
-http://127.0.0.1:3000/docs
-```
+## Flutter setup
 
-For production-style VPS deployment, keep Uvicorn on `127.0.0.1:3000` behind Nginx/HTTPS. For a temporary direct-port demo, `0.0.0.0:3000` can be used with the firewall configured appropriately.
-
-## Flutter setup on Arch / fish
-
-From project root:
+On your Arch/fish machine:
 
 ```fish
+cd viranari_v1_4_1
 ./scripts/prepare_mobile.fish
 cd mobile
+flutter clean
+flutter pub get
 flutter analyze
 ```
 
-Android emulator + local backend:
+Local emulator backend:
 
 ```fish
 flutter run --dart-define=VIRANARI_API_BASE=http://10.0.2.2:3000
 ```
 
-VPS:
+VPS/HTTPS:
 
 ```fish
-flutter run --dart-define=VIRANARI_API_BASE=https://api.example.com
+flutter run --dart-define=VIRANARI_API_BASE=https://YOUR-API-DOMAIN
 ```
 
-Temporary direct-IP test:
+For SMS testing use a **physical Android phone with an SMS-capable SIM/eSIM**. After installing V1.4.1, open Safety controls -> SMS fallback -> Prepare SMS. Android should show the permission request if it is not already granted.
 
-```fish
-flutter run --dart-define=VIRANARI_API_BASE=http://YOUR_VPS_IP:3000
-```
+## Two-phone Safety Presence test
 
-Re-run `prepare_mobile.fish` when using this source package because V1.4 patches Android SMS capability checks and platform permissions.
+1. Install V1.4.1 on Phone A and Phone B.
+2. Both may even use the same ViraNari account for testing.
+3. On both phones open Nearby.
+4. Enable "Broadcast this phone anonymously" on both.
+5. Keep both within the selected radius.
+6. Within the refresh window each device should show the other as an anonymous dot.
 
-## Physical-device live tracking test
+## Validation performed in this package
 
-1. Device A and Device B sign in to separate ViraNari accounts.
-2. A invites B; B accepts.
-3. A starts SOS.
-4. B opens Response → Track.
-5. Keep A stationary for 60+ seconds.
-   - B should remain LIVE while heartbeats arrive.
-   - GPS age may increase independently.
-6. Walk with A.
-   - marker and trail should update,
-   - distance travelled should increase.
-7. Disable Wi-Fi **and mobile data** on A while leaving cellular/SMS service available.
-   - GPS points should queue locally,
-   - B transitions LIVE → DELAYED → OFFLINE,
-   - last location remains visible,
-   - SMS fallback can run if prepared.
-8. Restore internet.
-   - A sends a heartbeat immediately,
-   - queued GPS trail replays,
-   - fresh GPS is published,
-   - B returns to LIVE.
+Backend: **31 automated tests pass**, including device-scoped Safety Presence.
 
-Turning Wi-Fi off alone may simply cause Android to switch to mobile data, so that is not a valid SMS-fallback outage test.
-
-## SMS test checklist
-
-Use a physical Android phone. The emulator cannot validate carrier SMS.
-
-- physical SIM/eSIM can send SMS,
-- airplane mode off,
-- default SMS SIM selected on dual-SIM phones,
-- ViraNari SMS permission granted,
-- both users have `+countrycode...` phone numbers,
-- Trusted Circle invitation accepted,
-- sender opened Trusted Circle while online so numbers were cached,
-- Safety Controls → SMS fallback enabled,
-- use **Send a real TEST SMS** before testing outage fallback.
-
-## Current limitations
-
-V1.4 is a hackathon prototype, not a certified emergency-service product.
-
-- No Firebase/APNs push notification service yet.
-- Journey Guard overdue status becomes visible when trusted users refresh/poll the app; it is not yet a push alarm.
-- Safety Presence is server-backed and app-open/periodic; ViraMesh BLE presence is planned for V2.
-- OpenStreetMap tiles require data unless an offline map package is added.
-- iOS background behavior differs from Android and needs device/TestFlight testing.
-- Verified Safe Nodes and Safety Compass are planned next, not faked in this release.
-
-See `UPGRADE_TO_V1_4.md`, `DEMO_CHECKLIST.md`, and `V1_4_FEATURES_FOR_PPT.md`.
+The container used to generate this package does not have Flutter installed, so the Android build itself must be validated on the Arch Flutter environment with `flutter analyze` and `flutter run`.

@@ -68,9 +68,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   DateTime? _lastHeartbeatAt;
   DateTime? _lastForcedGpsAt;
   DateTime? _lastPresencePublishAt;
-  DateTime? _lastJourneyRefreshAt;
   bool _presenceEnabled = false;
-  JourneyRecord? _activeJourney;
 
   @override
   void initState() {
@@ -78,7 +76,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _connectivitySubscription = _connectivity.onConnectivityChanged.listen(_handleConnectivityChange);
     _bootstrap();
-    _statusTimer = Timer.periodic(const Duration(seconds: 10), (_) => _heartbeat());
+    _statusTimer = Timer.periodic(const Duration(seconds: 5), (_) => _heartbeat());
   }
 
   @override
@@ -104,7 +102,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     await _refreshQueue();
     await _retryPending();
     await _refreshContacts();
-    await _refreshJourney();
     if (_presenceEnabled) unawaited(_publishPresence(force: true));
     try {
       final active = await widget.session.api.activeAlert();
@@ -129,7 +126,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       await _refreshDeviceStatus();
       await _retryPending();
       await _publishPresence();
-      await _refreshJourneyIfDue();
 
       final active = _latest;
       if (active != null && active.isActive) {
@@ -178,7 +174,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final now = DateTime.now();
     final phoneAge = _lastPhoneFix == null ? const Duration(days: 1) : now.difference(_lastPhoneFix!);
     final forceAge = _lastForcedGpsAt == null ? const Duration(days: 1) : now.difference(_lastForcedGpsAt!);
-    if (phoneAge < const Duration(seconds: 20) || forceAge < const Duration(seconds: 15)) return;
+    if (phoneAge < const Duration(seconds: 8) || forceAge < const Duration(seconds: 7)) return;
 
     _lastForcedGpsAt = now;
     try {
@@ -409,7 +405,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     try {
       Position? position = _lastPosition;
       position ??= await _location.current();
-      await widget.session.api.updatePresence(latitude: position.latitude, longitude: position.longitude);
+      final deviceId = await _settings.installationId();
+      await widget.session.api.updatePresence(deviceId: deviceId, latitude: position.latitude, longitude: position.longitude);
       _lastPresencePublishAt = now;
     } catch (_) {
       // Presence is best-effort and must never interfere with SOS.
@@ -420,115 +417,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     await _settings.setSafetyPresenceEnabled(enabled);
     if (!enabled) {
       try {
-        await widget.session.api.disablePresence();
+        final deviceId = await _settings.installationId();
+        await widget.session.api.disablePresence(deviceId);
       } catch (_) {}
       if (mounted) setState(() => _presenceEnabled = false);
       return;
     }
     if (mounted) setState(() => _presenceEnabled = true);
     await _publishPresence(force: true);
-  }
-
-  Future<void> _refreshJourney() async {
-    try {
-      final journey = await widget.session.api.activeJourney();
-      _lastJourneyRefreshAt = DateTime.now();
-      if (mounted) setState(() => _activeJourney = journey);
-    } catch (_) {}
-  }
-
-  Future<void> _refreshJourneyIfDue() async {
-    final now = DateTime.now();
-    if (_lastJourneyRefreshAt != null && now.difference(_lastJourneyRefreshAt!) < const Duration(seconds: 30)) return;
-    await _refreshJourney();
-  }
-
-  Future<void> _startJourneyGuard() async {
-    if (_activeJourney?.isActive == true) return;
-    final controller = TextEditingController();
-    var minutes = 30;
-    final result = await showModalBottomSheet<({String label, int minutes})>(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setSheetState) => Padding(
-          padding: EdgeInsets.fromLTRB(20, 4, 20, MediaQuery.of(context).viewInsets.bottom + 24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Journey Guard', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w900)),
-              const SizedBox(height: 6),
-              const Text('Tell your trusted circle when you expect to arrive. If you miss the time, they will see the journey as overdue.'),
-              const SizedBox(height: 18),
-              TextField(
-                controller: controller,
-                textInputAction: TextInputAction.done,
-                decoration: const InputDecoration(labelText: 'Destination', hintText: 'Hostel, home, bus stop…'),
-              ),
-              const SizedBox(height: 14),
-              Wrap(
-                spacing: 8,
-                children: [15, 30, 60, 120].map((m) => ChoiceChip(
-                  label: Text('$m min'),
-                  selected: minutes == m,
-                  onSelected: (_) => setSheetState(() => minutes = m),
-                )).toList(),
-              ),
-              const SizedBox(height: 20),
-              FilledButton(
-                onPressed: () {
-                  final text = controller.text.trim();
-                  if (text.length < 2) return;
-                  Navigator.pop(context, (label: text, minutes: minutes));
-                },
-                child: const Text('Start Journey Guard'),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-    controller.dispose();
-    if (result == null) return;
-    try {
-      Position? position;
-      try {
-        position = _lastPosition ?? await _location.current();
-      } catch (_) {}
-      final journey = await widget.session.api.startJourney(
-        destinationLabel: result.label,
-        durationMinutes: result.minutes,
-        startLatitude: position?.latitude,
-        startLongitude: position?.longitude,
-      );
-      if (mounted) setState(() => _activeJourney = journey);
-    } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_cleanError(e))));
-    }
-  }
-
-  Future<void> _finishJourneySafe() async {
-    final journey = _activeJourney;
-    if (journey == null) return;
-    try {
-      await widget.session.api.markJourneySafe(journey.id);
-      if (mounted) setState(() => _activeJourney = null);
-    } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_cleanError(e))));
-    }
-  }
-
-  Future<void> _cancelJourney() async {
-    final journey = _activeJourney;
-    if (journey == null) return;
-    try {
-      await widget.session.api.cancelJourney(journey.id);
-      if (mounted) setState(() => _activeJourney = null);
-    } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_cleanError(e))));
-    }
   }
 
   Future<void> _refreshQueue() async {
@@ -783,14 +679,43 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       if (mounted) setState(() => _smsReady = false);
       return;
     }
-    final ready = await _sms.prepare();
+    final capability = await _sms.prepare();
+    final ready = capability.ready;
     await _settings.setSmsFallbackEnabled(ready);
     if (mounted) {
       setState(() => _smsReady = ready);
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(ready ? 'SMS fallback is prepared for emergencies.' : 'SMS fallback is not ready. Check permission and that an SMS-capable SIM is active.'),
-      ));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(capability.issue)));
+      if (!ready) await _showSmsDiagnostics();
     }
+  }
+
+  Future<void> _showSmsDiagnostics() async {
+    final cap = await _sms.diagnose();
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('SMS fallback diagnostics'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _SmsCheck(label: 'SEND_SMS in installed APK', ok: cap.permissionDeclared),
+            _SmsCheck(label: 'SMS permission granted', ok: cap.permissionGranted),
+            _SmsCheck(label: 'SMS-capable phone', ok: cap.smsCapable),
+            _SmsCheck(label: 'SIM/eSIM ready', ok: cap.simReady),
+            _SmsCheck(label: 'Default SMS SIM selected', ok: cap.subscriptionReady),
+            const SizedBox(height: 10),
+            Text(cap.issue, style: const TextStyle(color: ViraColors.mutedPlum)),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: _sms.openAppSettings, child: const Text('App settings')),
+          TextButton(onPressed: _sms.openSmsSettings, child: const Text('SIM settings')),
+          FilledButton(onPressed: () => Navigator.pop(context), child: const Text('Done')),
+        ],
+      ),
+    );
   }
 
   Future<void> _testSmsTransport() async {
@@ -866,13 +791,20 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   value: _smsReady,
                   onChanged: _latest?.isActive == true ? null : (v) async { await _configureSms(v); setSheetState(() {}); },
                 ),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: TextButton.icon(
-                    onPressed: _smsReady ? _testSmsTransport : null,
-                    icon: const Icon(Icons.sms_outlined),
-                    label: const Text('Send a real TEST SMS'),
-                  ),
+                Wrap(
+                  spacing: 8,
+                  children: [
+                    TextButton.icon(
+                      onPressed: _smsReady ? _testSmsTransport : null,
+                      icon: const Icon(Icons.sms_outlined),
+                      label: const Text('Send TEST SMS'),
+                    ),
+                    TextButton.icon(
+                      onPressed: _showSmsDiagnostics,
+                      icon: const Icon(Icons.health_and_safety_outlined),
+                      label: const Text('SMS diagnostics'),
+                    ),
+                  ],
                 ),
                 SwitchListTile.adaptive(
                   contentPadding: EdgeInsets.zero,
@@ -897,16 +829,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final latest = _latest;
     final lowBattery = (_battery ?? 100) <= 20;
     final online = _backendOnline;
-    final journey = _activeJourney;
-    final journeyOverdue = journey != null && journey.expectedArrivalAt.toLocal().isBefore(DateTime.now());
 
     return RefreshIndicator(
       onRefresh: () async {
         await _refreshDeviceStatus();
         await _refreshContacts();
         await _refreshLatest();
-        await _refreshJourney();
-      },
+          },
       child: ListView(
         padding: const EdgeInsets.fromLTRB(20, 10, 20, 110),
         children: [
@@ -983,36 +912,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           else
             Text(_message, textAlign: TextAlign.center, style: const TextStyle(color: ViraColors.mutedPlum, height: 1.35)),
           const SizedBox(height: 18),
-          if (journey != null) ...[
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: journeyOverdue ? ViraColors.dangerSoft : ViraColors.successSoft,
-                borderRadius: BorderRadius.circular(18),
-              ),
-              child: Row(
-                children: [
-                  Icon(journeyOverdue ? Icons.timer_off_rounded : Icons.route_rounded, color: journeyOverdue ? ViraColors.pinkDark : ViraColors.success),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(journeyOverdue ? 'Journey overdue' : 'Journey Guard active', style: const TextStyle(fontWeight: FontWeight.w900)),
-                        Text('${journey.destinationLabel} · expected ${DateFormat('h:mm a').format(journey.expectedArrivalAt.toLocal())}', style: const TextStyle(color: ViraColors.mutedPlum)),
-                      ],
-                    ),
-                  ),
-                  TextButton(onPressed: _finishJourneySafe, child: const Text("I'm safe")),
-                ],
-              ),
-            ),
-            const SizedBox(height: 16),
-          ],
           Row(
             children: [
-              Expanded(child: _QuickAction(icon: Icons.route_rounded, label: journey == null ? 'Journey' : 'Journey active', onTap: journey == null ? _startJourneyGuard : _cancelJourney)),
-              const SizedBox(width: 10),
               Expanded(child: _QuickAction(icon: Icons.radar_rounded, label: 'Nearby', onTap: _openPresence)),
               const SizedBox(width: 10),
               Expanded(child: _QuickAction(icon: Icons.sms_outlined, label: _smsReady ? 'SMS ready' : 'SMS setup', onTap: _showControls)),
@@ -1053,6 +954,25 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       ),
     );
   }
+}
+
+
+class _SmsCheck extends StatelessWidget {
+  const _SmsCheck({required this.label, required this.ok});
+  final String label;
+  final bool ok;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(
+          children: [
+            Icon(ok ? Icons.check_circle_rounded : Icons.cancel_rounded, color: ok ? ViraColors.success : ViraColors.pinkDark, size: 19),
+            const SizedBox(width: 8),
+            Expanded(child: Text(label)),
+          ],
+        ),
+      );
 }
 
 class _StatusDot extends StatelessWidget {

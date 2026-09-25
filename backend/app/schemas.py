@@ -162,6 +162,7 @@ class InboxAlertOut(BaseModel):
 
 
 class PresenceUpdateIn(BaseModel):
+    device_id: str = Field(min_length=8, max_length=80)
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
     enabled: bool = True
@@ -171,29 +172,6 @@ class PresencePointOut(BaseModel):
     approx_distance_m: int
     bearing_deg: int
     age_seconds: int
-
-
-class JourneyCreateIn(BaseModel):
-    destination_label: str = Field(min_length=2, max_length=120)
-    duration_minutes: int = Field(ge=5, le=720)
-    start_latitude: float | None = Field(default=None, ge=-90, le=90)
-    start_longitude: float | None = Field(default=None, ge=-180, le=180)
-
-
-class JourneyOut(BaseModel):
-    id: str
-    owner_id: str
-    owner_name: str
-    owner_phone_e164: str | None = None
-    destination_label: str
-    expected_arrival_at: datetime
-    state: str
-    start_latitude: float | None
-    start_longitude: float | None
-    created_at: datetime
-    updated_at: datetime
-    completed_at: datetime | None
-    overdue: bool
 
 
 class MessageOut(BaseModel):

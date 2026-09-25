@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:uuid/uuid.dart';
 
 import 'models.dart';
 
@@ -57,6 +58,7 @@ class TrustedPhoneStore {
 class SafetySettingsStore {
   static const _smsKey = 'viranari_sms_fallback_enabled_v13';
   static const _presenceKey = 'viranari_safety_presence_enabled_v14';
+  static const _deviceIdKey = 'viranari_installation_id_v141';
   final FlutterSecureStorage _secure = const FlutterSecureStorage();
 
   Future<bool> smsFallbackEnabled() async => (await _secure.read(key: _smsKey)) == '1';
@@ -64,6 +66,14 @@ class SafetySettingsStore {
 
   Future<bool> safetyPresenceEnabled() async => (await _secure.read(key: _presenceKey)) == '1';
   Future<void> setSafetyPresenceEnabled(bool value) => _secure.write(key: _presenceKey, value: value ? '1' : '0');
+
+  Future<String> installationId() async {
+    final existing = await _secure.read(key: _deviceIdKey);
+    if (existing != null && existing.isNotEmpty) return existing;
+    final created = const Uuid().v4();
+    await _secure.write(key: _deviceIdKey, value: created);
+    return created;
+  }
 }
 
 class LocationQueueStore {

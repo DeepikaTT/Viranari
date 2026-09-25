@@ -1,31 +1,10 @@
-ViraNari V1.4 backend validation
-================================
+ViraNari V1.4.1 backend validation
+==================================
+31 automated backend tests passed.
 
-Command:
-  python -m pytest -q
+Covered areas include authentication, trusted contacts, SOS idempotency,
+delivery/acknowledgement, live location, heartbeat liveness, SQLite upgrades,
+UTC timestamp handling, access control, and device-scoped Safety Presence.
 
-Result:
-  33 passed
-
-Coverage includes:
-- registration/authentication
-- Trusted Circle consent/privacy
-- idempotent SOS
-- delivery and acknowledgement
-- live location and timeline
-- persistence/restarts
-- SMS-ready phone fields
-- offline location batch timestamps
-- V1/V1.2/V1.3 schema upgrades
-- heartbeat liveness without fake GPS samples
-- liveness timestamps in responder inbox
-- privacy-preserving Safety Presence
-- presence disable behavior
-- Journey Guard visibility, ownership and overdue derivation
-- create_app upgrade order for old schemas
-
-Flutter SDK is not installed in the packaging environment. Run on the Arch development machine:
-  ./scripts/prepare_mobile.fish
-  cd mobile
-  flutter analyze
-  flutter run ...
+Flutter/Android compilation must be run on the user's Arch Flutter environment
+because Flutter is not installed in the generation container.

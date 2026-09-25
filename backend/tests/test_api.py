@@ -551,11 +551,11 @@ def test_28_safety_presence_is_anonymous_and_coarse(client):
     b = register(client, "Maya", "maya@example.com")
     update = client.post(
         "/presence", headers=auth(a["access_token"]),
-        json={"latitude": 17.385044, "longitude": 78.486671, "enabled": True},
+        json={"device_id": "device-a-0001", "latitude": 17.385044, "longitude": 78.486671, "enabled": True},
     )
     assert update.status_code == 200
     nearby = client.get(
-        "/presence/nearby?latitude=17.3850&longitude=78.4867&radius_m=1000",
+        "/presence/nearby?device_id=device-b-0001&latitude=17.3850&longitude=78.4867&radius_m=1000",
         headers=auth(b["access_token"]),
     )
     assert nearby.status_code == 200
@@ -568,43 +568,14 @@ def test_28_safety_presence_is_anonymous_and_coarse(client):
 def test_29_disabled_presence_disappears(client):
     a = register(client, "Asha", "asha@example.com")
     b = register(client, "Maya", "maya@example.com")
-    client.post("/presence", headers=auth(a["access_token"]), json={"latitude": 17.385, "longitude": 78.487, "enabled": True})
-    client.delete("/presence", headers=auth(a["access_token"]))
+    client.post("/presence", headers=auth(a["access_token"]), json={"device_id": "device-a-0001", "latitude": 17.385, "longitude": 78.487, "enabled": True})
+    client.delete("/presence?device_id=device-a-0001", headers=auth(a["access_token"]))
     nearby = client.get(
-        "/presence/nearby?latitude=17.385&longitude=78.487&radius_m=1000",
+        "/presence/nearby?device_id=device-b-0001&latitude=17.385&longitude=78.487&radius_m=1000",
         headers=auth(b["access_token"]),
     )
     assert nearby.status_code == 200
     assert nearby.json() == []
-
-
-def test_30_journey_guard_visible_to_trusted_contact(client):
-    owner, contact, _ = _pair(client)
-    journey = client.post(
-        "/journeys",
-        headers=auth(owner["access_token"]),
-        json={"destination_label": "Hostel", "duration_minutes": 30, "start_latitude": 17.385, "start_longitude": 78.487},
-    )
-    assert journey.status_code == 201, journey.text
-    inbox = client.get("/journeys/inbox", headers=auth(contact["access_token"]))
-    assert inbox.status_code == 200
-    assert inbox.json()[0]["destination_label"] == "Hostel"
-    safe = client.post(f"/journeys/{journey.json()['id']}/safe", headers=auth(owner["access_token"]))
-    assert safe.status_code == 200
-    assert safe.json()["state"] == "safe"
-    assert client.get("/journeys/inbox", headers=auth(contact["access_token"])).json() == []
-
-
-def test_31_stranger_cannot_complete_someone_elses_journey(client):
-    owner = register(client, "Asha", "asha@example.com")
-    stranger = register(client, "Riya", "riya@example.com")
-    journey = client.post(
-        "/journeys",
-        headers=auth(owner["access_token"]),
-        json={"destination_label": "Home", "duration_minutes": 15},
-    ).json()
-    response = client.post(f"/journeys/{journey['id']}/safe", headers=auth(stranger["access_token"]))
-    assert response.status_code == 404
 
 
 def test_32_create_app_upgrades_existing_alert_schema_before_indexes(tmp_path):
@@ -645,25 +616,24 @@ def test_32_create_app_upgrades_existing_alert_schema_before_indexes(tmp_path):
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     conn.close()
     assert {"last_device_seen_at", "last_gps_fix_at", "last_location_sync_at"}.issubset(cols)
-    assert {"journeys", "safety_presence"}.issubset(tables)
+    assert {"safety_presence_devices"}.issubset(tables)
 
 
-def test_33_journey_overdue_is_derived_server_side(client):
-    from app.models import Journey, utcnow
-
-    owner, contact, _ = _pair(client)
-    journey = client.post(
-        "/journeys",
-        headers=auth(owner["access_token"]),
-        json={"destination_label": "Home", "duration_minutes": 15},
-    ).json()
-
-    SessionLocal = client.app.state.SessionLocal
-    with SessionLocal() as db:
-        row = db.get(Journey, journey["id"])
-        row.expected_arrival_at = utcnow() - timedelta(minutes=1)
-        db.commit()
-
-    inbox = client.get("/journeys/inbox", headers=auth(contact["access_token"]))
-    assert inbox.status_code == 200
-    assert inbox.json()[0]["overdue"] is True
+def test_34_presence_is_device_scoped_even_for_same_account(client):
+    user = register(client, "Asha", "asha@example.com")
+    token = user["access_token"]
+    assert client.post(
+        "/presence", headers=auth(token),
+        json={"device_id": "phone-one-0001", "latitude": 17.3850, "longitude": 78.4867, "enabled": True},
+    ).status_code == 200
+    assert client.post(
+        "/presence", headers=auth(token),
+        json={"device_id": "phone-two-0002", "latitude": 17.3854, "longitude": 78.4869, "enabled": True},
+    ).status_code == 200
+    nearby = client.get(
+        "/presence/nearby?device_id=phone-one-0001&latitude=17.3850&longitude=78.4867&radius_m=1000",
+        headers=auth(token),
+    )
+    assert nearby.status_code == 200
+    assert len(nearby.json()) == 1
+    assert set(nearby.json()[0]) == {"approx_distance_m", "bearing_deg", "age_seconds"}

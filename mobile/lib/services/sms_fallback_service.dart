@@ -1,7 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/services.dart';
-import 'package:permission_handler/permission_handler.dart';
+import 'package:permission_handler/permission_handler.dart' as ph;
 import 'package:url_launcher/url_launcher.dart';
 
 class SmsFallbackResult {
@@ -11,35 +11,106 @@ class SmsFallbackResult {
   final String message;
 }
 
+class SmsCapability {
+  const SmsCapability({
+    required this.platformSupported,
+    required this.permissionDeclared,
+    required this.permissionGranted,
+    required this.smsCapable,
+    required this.simReady,
+    required this.subscriptionReady,
+    this.defaultSubscriptionId,
+  });
+
+  final bool platformSupported;
+  final bool permissionDeclared;
+  final bool permissionGranted;
+  final bool smsCapable;
+  final bool simReady;
+  final bool subscriptionReady;
+  final int? defaultSubscriptionId;
+
+  bool get ready => Platform.isIOS ||
+      (platformSupported && permissionDeclared && permissionGranted && smsCapable && simReady && subscriptionReady);
+
+  String get issue {
+    if (Platform.isIOS) return 'iOS uses the system Messages composer.';
+    if (!platformSupported || !smsCapable) return 'This device does not report SMS telephony capability.';
+    if (!permissionDeclared) return 'SEND_SMS is missing from the installed APK. Rebuild/reinstall ViraNari after running prepare_mobile.fish.';
+    if (!permissionGranted) return 'SMS permission is not granted. Tap Prepare SMS to request it.';
+    if (!simReady) return 'No SMS-capable SIM/eSIM is ready. Keep airplane mode off and confirm the SIM can send a normal text.';
+    if (!subscriptionReady) return 'No default SMS SIM is selected. Choose a default SMS SIM in Android settings.';
+    return 'SMS fallback is ready.';
+  }
+}
+
 class SmsFallbackService {
   static const _channel = MethodChannel('viranari/sms');
 
-  Future<bool> _androidCapabilityReady() async {
+  Future<SmsCapability> diagnose() async {
+    if (Platform.isIOS) {
+      return const SmsCapability(
+        platformSupported: true,
+        permissionDeclared: true,
+        permissionGranted: true,
+        smsCapable: true,
+        simReady: true,
+        subscriptionReady: true,
+      );
+    }
+    if (!Platform.isAndroid) {
+      return const SmsCapability(
+        platformSupported: false,
+        permissionDeclared: false,
+        permissionGranted: false,
+        smsCapable: false,
+        simReady: false,
+        subscriptionReady: false,
+      );
+    }
     try {
       final result = await _channel.invokeMapMethod<String, dynamic>('smsCapability');
-      return result?['capable'] == true && result?['sim_ready'] == true && result?['subscription_ready'] == true;
+      return SmsCapability(
+        platformSupported: true,
+        permissionDeclared: result?['permission_declared'] == true,
+        permissionGranted: result?['permission_granted'] == true,
+        smsCapable: result?['capable'] == true,
+        simReady: result?['sim_ready'] == true,
+        subscriptionReady: result?['subscription_ready'] == true,
+        defaultSubscriptionId: result?['default_subscription_id'] as int?,
+      );
     } catch (_) {
-      return false;
+      return const SmsCapability(
+        platformSupported: false,
+        permissionDeclared: false,
+        permissionGranted: false,
+        smsCapable: false,
+        simReady: false,
+        subscriptionReady: false,
+      );
     }
   }
 
-  Future<bool> prepare() async {
+  Future<SmsCapability> prepare() async {
     if (Platform.isAndroid) {
-      final status = await Permission.sms.request();
-      if (!status.isGranted) return false;
-      return _androidCapabilityReady();
+      try {
+        await _channel.invokeMethod<bool>('requestSmsPermission');
+      } catch (_) {
+        await ph.Permission.sms.request();
+      }
     }
-    if (Platform.isIOS) return true;
-    return false;
+    return diagnose();
   }
 
-  Future<bool> isReady() async {
-    if (Platform.isAndroid) {
-      final status = await Permission.sms.status;
-      if (!status.isGranted) return false;
-      return _androidCapabilityReady();
-    }
-    return Platform.isIOS;
+  Future<bool> isReady() async => (await diagnose()).ready;
+
+  Future<bool> openAppSettings() => ph.openAppSettings();
+
+  Future<void> openSmsSettings() async {
+    if (!Platform.isAndroid) return;
+    try {
+      await _channel.invokeMethod<void>('openSmsSettings');
+    } catch (_) {}
   }
 
   Future<SmsFallbackResult> send({required List<String> recipients, required String message}) async {
@@ -48,12 +119,9 @@ class SmsFallbackService {
     }
 
     if (Platform.isAndroid) {
-      final status = await Permission.sms.status;
-      if (!status.isGranted) {
-        return const SmsFallbackResult(dispatchedCount: 0, composerOpened: false, message: 'SEND_SMS permission is not granted. Enable SMS fallback before an emergency.');
-      }
-      if (!await _androidCapabilityReady()) {
-        return const SmsFallbackResult(dispatchedCount: 0, composerOpened: false, message: 'SMS is not ready. Keep airplane mode off, confirm a SIM/eSIM can text, and select a default SMS SIM in Android settings.');
+      final cap = await diagnose();
+      if (!cap.ready) {
+        return SmsFallbackResult(dispatchedCount: 0, composerOpened: false, message: cap.issue);
       }
       try {
         final count = await _channel.invokeMethod<int>('sendSms', {

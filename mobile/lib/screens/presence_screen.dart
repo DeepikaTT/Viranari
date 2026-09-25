@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -21,44 +22,70 @@ class _SafetyPresenceScreenState extends State<SafetyPresenceScreen> {
   final _settings = SafetySettingsStore();
   bool _enabled = false;
   bool _loading = true;
+  bool _refreshing = false;
   List<PresencePoint> _points = const [];
   String? _error;
   int _radiusM = 1500;
+  Timer? _timer;
+  DateTime? _lastBroadcast;
 
   @override
   void initState() {
     super.initState();
     _load();
+    _timer = Timer.periodic(const Duration(seconds: 6), (_) => _load(silent: true));
   }
 
-  Future<void> _load() async {
-    if (mounted) setState(() { _loading = true; _error = null; });
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _load({bool silent = false}) async {
+    if (_refreshing) return;
+    _refreshing = true;
+    if (!silent && mounted) setState(() { _loading = true; _error = null; });
     try {
       _enabled = await _settings.safetyPresenceEnabled();
+      final deviceId = await _settings.installationId();
       final position = await _location.current();
       if (_enabled) {
-        await widget.session.api.updatePresence(latitude: position.latitude, longitude: position.longitude);
+        await widget.session.api.updatePresence(
+          deviceId: deviceId,
+          latitude: position.latitude,
+          longitude: position.longitude,
+        );
+        _lastBroadcast = DateTime.now();
       }
       final points = await widget.session.api.nearbyPresence(
+        deviceId: deviceId,
         latitude: position.latitude,
         longitude: position.longitude,
         radiusM: _radiusM,
       );
-      if (mounted) setState(() => _points = points);
+      if (mounted) setState(() { _points = points; _error = null; });
     } catch (e) {
-      if (mounted) setState(() => _error = e.toString());
+      if (mounted && !silent) setState(() => _error = e.toString());
     } finally {
-      if (mounted) setState(() => _loading = false);
+      _refreshing = false;
+      if (mounted && !silent) setState(() => _loading = false);
     }
   }
 
   Future<void> _toggle(bool value) async {
     try {
+      final deviceId = await _settings.installationId();
       if (value) {
         final position = await _location.current();
-        await widget.session.api.updatePresence(latitude: position.latitude, longitude: position.longitude);
+        await widget.session.api.updatePresence(
+          deviceId: deviceId,
+          latitude: position.latitude,
+          longitude: position.longitude,
+        );
+        _lastBroadcast = DateTime.now();
       } else {
-        await widget.session.api.disablePresence();
+        await widget.session.api.disablePresence(deviceId);
       }
       await _settings.setSafetyPresenceEnabled(value);
       if (mounted) setState(() => _enabled = value);
@@ -67,6 +94,8 @@ class _SafetyPresenceScreenState extends State<SafetyPresenceScreen> {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString())));
     }
   }
+
+  String get _radiusLabel => _radiusM >= 1000 ? '${(_radiusM / 1000).toStringAsFixed(1)} km' : '$_radiusM m';
 
   @override
   Widget build(BuildContext context) {
@@ -80,18 +109,20 @@ class _SafetyPresenceScreenState extends State<SafetyPresenceScreen> {
             Text('Who is within reach?', style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w900, color: ViraColors.plum)),
             const SizedBox(height: 6),
             const Text(
-              'ViraNari shows anonymous, short-lived presence only. No names, phone numbers, stable IDs or exact public coordinates are exposed.',
+              'Anonymous device presence only. No names, phone numbers, stable public IDs or exact public coordinates are returned.',
               style: TextStyle(color: ViraColors.mutedPlum, height: 1.4),
             ),
-            const SizedBox(height: 18),
+            const SizedBox(height: 14),
             SwitchListTile.adaptive(
               contentPadding: EdgeInsets.zero,
               value: _enabled,
               onChanged: _toggle,
-              title: const Text('Let others know a ViraNari device is nearby', style: TextStyle(fontWeight: FontWeight.w900)),
-              subtitle: const Text('Opt-in only. Presence expires automatically if this device stops updating.'),
+              title: const Text('Broadcast this phone anonymously', style: TextStyle(fontWeight: FontWeight.w900)),
+              subtitle: Text(_enabled
+                  ? 'Active · refreshes about every 6 seconds while this screen is open.'
+                  : 'Enable this on the other test phone too.'),
             ),
-            const SizedBox(height: 14),
+            const SizedBox(height: 8),
             SegmentedButton<int>(
               segments: const [
                 ButtonSegment(value: 500, label: Text('500 m')),
@@ -104,7 +135,7 @@ class _SafetyPresenceScreenState extends State<SafetyPresenceScreen> {
                 _load();
               },
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 18),
             AspectRatio(
               aspectRatio: 1,
               child: DecoratedBox(
@@ -129,22 +160,33 @@ class _SafetyPresenceScreenState extends State<SafetyPresenceScreen> {
                       ),
               ),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 14),
             Row(
               children: [
                 const Icon(Icons.radar_rounded, color: ViraColors.plum),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    '${_points.length} anonymous ViraNari device${_points.length == 1 ? '' : 's'} seen within ${_radiusM >= 1000 ? '${(_radiusM / 1000).toStringAsFixed(1)} km' : '$_radiusM m'}.',
+                    '${_points.length} other ViraNari device${_points.length == 1 ? '' : 's'} within $_radiusLabel',
                     style: const TextStyle(fontWeight: FontWeight.w900),
                   ),
                 ),
+                IconButton(onPressed: _refreshing ? null : () => _load(), icon: const Icon(Icons.refresh_rounded), tooltip: 'Refresh now'),
               ],
             ),
+            if (_enabled && _lastBroadcast != null)
+              Text('This phone broadcast ${DateTime.now().difference(_lastBroadcast!).inSeconds < 10 ? 'just now' : '${DateTime.now().difference(_lastBroadcast!).inSeconds}s ago'}.',
+                  style: const TextStyle(color: ViraColors.mutedPlum)),
+            if (_points.isEmpty && !_loading) ...[
+              const SizedBox(height: 10),
+              const Text(
+                'No dots yet. For a two-phone test, enable Safety Presence on BOTH phones. V1.4.1 is device-based, so even two phones signed into the same account can appear separately.',
+                style: TextStyle(color: ViraColors.mutedPlum, height: 1.4),
+              ),
+            ],
             if (_points.isNotEmpty) ...[
-              const SizedBox(height: 12),
-              ..._points.take(5).map((p) => Padding(
+              const SizedBox(height: 10),
+              ..._points.take(8).map((p) => Padding(
                     padding: const EdgeInsets.symmetric(vertical: 5),
                     child: Row(
                       children: [

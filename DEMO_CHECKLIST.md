@@ -1,37 +1,37 @@
-# ViraNari V1.4 Demo Checklist
+# ViraNari V1.4.1 demo checklist
 
-## Before judges arrive
+## Backend
+- [ ] `/health` returns version `1.4.1`
+- [ ] Both test accounts can log in
+- [ ] Trusted Circle relationship is active
 
-- [ ] HTTPS backend reachable
-- [ ] `/health` returns 1.4.0
-- [ ] two Android accounts prepared
-- [ ] Trusted Circle accepted
-- [ ] phone numbers in E.164 format
-- [ ] sender GPS permission granted
-- [ ] background location allowed where possible
-- [ ] SMS fallback prepared on physical Android phone
-- [ ] real TEST SMS verified on team devices
-- [ ] Practice Mode OFF for transport test; ON for safe stage demos
+## Live map
+- [ ] Map tab renders OpenStreetMap tiles
+- [ ] SOS creates an active emergency
+- [ ] sender marker/trail appears on Map
+- [ ] responder Map/Track view follows the victim
+- [ ] stationary victim stays LIVE because heartbeat continues
+- [ ] walking changes marker/trail and distance travelled
 
-## 90-second demo
+## SMS
+- [ ] physical Android phone, not emulator
+- [ ] `Prepare SMS` requests SMS permission
+- [ ] diagnostics says SEND_SMS is declared
+- [ ] diagnostics says permission granted
+- [ ] SIM ready
+- [ ] default SMS SIM selected
+- [ ] accepted Trusted Circle phone number is cached
+- [ ] TEST SMS succeeds before relying on outage fallback
 
-1. Show the clean Home screen: status strip + SOS, no feature-card wall.
-2. Start Journey Guard for “Hostel — 30 min”.
-3. Press-and-hold SOS on sender.
-4. Responder opens Response → Track.
-5. Show LIVE based on **device heartbeat**, plus separate GPS age.
-6. Keep sender stationary: LIVE should remain LIVE.
-7. Move sender/emulator GPS: marker, trail, direction and distance travelled change.
-8. Disable sender data: responder transitions to DELAYED/OFFLINE but retains marker.
-9. Sender continues collecting GPS locally; SMS fallback may fire once.
-10. Restore data: heartbeat and queued trail reconcile; responder returns to LIVE.
-11. Open Nearby to show anonymous Safety Presence radar.
+## Safety Presence
+- [ ] enable Nearby on Phone A
+- [ ] enable Nearby on Phone B
+- [ ] both broadcast anonymously
+- [ ] each phone sees the other as a dot
+- [ ] test also works when both phones use the same account
 
-## Never claim as implemented
-
-- BLE/multi-hop ViraMesh
-- police dispatch integration
-- certified emergency response
-- push notifications while the recipient app is completely inactive
-- offline map tiles
-- verified Safe Node partnership network
+## Connectivity
+- [ ] active SOS online -> LIVE
+- [ ] data off -> last-known marker retained
+- [ ] GPS points continue queueing locally
+- [ ] data on -> queue replays and LIVE returns

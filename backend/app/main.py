@@ -25,9 +25,7 @@ from .models import (
     AlertRecipient,
     AlertState,
     ContactStatus,
-    Journey,
-    JourneyState,
-    SafetyPresence,
+    SafetyPresenceDevice,
     TrustedContact,
     User,
     utcnow,
@@ -45,8 +43,6 @@ from .schemas import (
     ContactCreateIn,
     ContactOut,
     InboxAlertOut,
-    JourneyCreateIn,
-    JourneyOut,
     LoginIn,
     MessageOut,
     PhoneUpdateIn,
@@ -94,10 +90,10 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
 
     app = FastAPI(
         title="ViraNari API",
-        version="1.4.0",
+        version="1.4.1",
         description=(
             "Emergency-response API with consent-based trusted contacts, delivery receipts, "
-            "idempotent offline retry, heartbeat-based live safety, SMS fallback, privacy-preserving Safety Presence, and Journey Guard."
+            "idempotent offline retry, heartbeat-based live safety, SMS fallback, live map tracking, and privacy-preserving device-based Safety Presence."
         ),
     )
     app.state.engine = engine
@@ -214,7 +210,7 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "service": "viranari-api", "version": "1.4.0"}
+        return {"status": "ok", "service": "viranari-api", "version": "1.4.1"}
 
     @app.post("/auth/register", response_model=TokenOut, status_code=201)
     def register(payload: RegisterIn, db: Session = Depends(get_db)):
@@ -738,11 +734,14 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
         current: User = Depends(get_current_user),
         db: Session = Depends(get_db),
     ):
-        presence = db.get(SafetyPresence, current.id)
+        # Presence is keyed by installation rather than account. This lets two
+        # phones logged into the same test account still appear as two devices.
+        presence = db.get(SafetyPresenceDevice, payload.device_id)
         now = utcnow()
         if presence is None:
-            presence = SafetyPresence(
-                user_id=current.id,
+            presence = SafetyPresenceDevice(
+                device_id=payload.device_id,
+                owner_user_id=current.id,
                 coarse_latitude=_quantise(payload.latitude),
                 coarse_longitude=_quantise(payload.longitude),
                 enabled=payload.enabled,
@@ -750,6 +749,10 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
             )
             db.add(presence)
         else:
+            # The installation ID survives logout. If the same physical phone
+            # signs into another account, transfer the anonymous presence row to
+            # the currently authenticated owner instead of making presence fail.
+            presence.owner_user_id = current.id
             presence.coarse_latitude = _quantise(payload.latitude)
             presence.coarse_longitude = _quantise(payload.longitude)
             presence.enabled = payload.enabled
@@ -758,9 +761,13 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
         return MessageOut(message="Safety Presence updated" if payload.enabled else "Safety Presence disabled")
 
     @app.delete("/presence", response_model=MessageOut)
-    def disable_presence(current: User = Depends(get_current_user), db: Session = Depends(get_db)):
-        presence = db.get(SafetyPresence, current.id)
-        if presence is not None:
+    def disable_presence(
+        device_id: str = Query(min_length=8, max_length=80),
+        current: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ):
+        presence = db.get(SafetyPresenceDevice, device_id)
+        if presence is not None and presence.owner_user_id == current.id:
             presence.enabled = False
             presence.last_seen_at = utcnow()
             db.commit()
@@ -768,6 +775,7 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
 
     @app.get("/presence/nearby", response_model=list[PresencePointOut])
     def nearby_presence(
+        device_id: str = Query(min_length=8, max_length=80),
         latitude: float = Query(ge=-90, le=90),
         longitude: float = Query(ge=-180, le=180),
         radius_m: int = Query(default=1500, ge=100, le=3000),
@@ -775,13 +783,13 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
         db: Session = Depends(get_db),
     ):
         now = utcnow()
-        cutoff = now - timedelta(seconds=120)
+        cutoff = now - timedelta(seconds=180)
         rows = db.scalars(
-            select(SafetyPresence).where(
+            select(SafetyPresenceDevice).where(
                 and_(
-                    SafetyPresence.enabled.is_(True),
-                    SafetyPresence.user_id != current.id,
-                    SafetyPresence.last_seen_at >= cutoff,
+                    SafetyPresenceDevice.enabled.is_(True),
+                    SafetyPresenceDevice.device_id != device_id,
+                    SafetyPresenceDevice.last_seen_at >= cutoff,
                 )
             )
         ).all()
@@ -792,7 +800,6 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
                 continue
             seen = ensure_utc(row.last_seen_at)
             age = max(0, int((now - seen).total_seconds()))
-            # Deliberately coarse. The client gets no user ID, name or exact point.
             out.append(PresencePointOut(
                 approx_distance_m=max(50, int(round(distance / 50.0) * 50)),
                 bearing_deg=int(round(bearing / 45.0) * 45) % 360,
@@ -801,116 +808,8 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
         out.sort(key=lambda p: p.approx_distance_m)
         return out[:20]
 
-    # ---------- V1.4 Journey Guard ----------
-    def journey_out(db: Session, journey: Journey) -> JourneyOut:
-        owner = db.get(User, journey.owner_id)
-        expected = ensure_utc(journey.expected_arrival_at)
-        return JourneyOut(
-            id=journey.id,
-            owner_id=journey.owner_id,
-            owner_name=owner.name,
-            owner_phone_e164=owner.phone_e164,
-            destination_label=journey.destination_label,
-            expected_arrival_at=expected,
-            state=journey.state,
-            start_latitude=journey.start_latitude,
-            start_longitude=journey.start_longitude,
-            created_at=ensure_utc(journey.created_at),
-            updated_at=ensure_utc(journey.updated_at),
-            completed_at=ensure_utc(journey.completed_at),
-            overdue=journey.state == JourneyState.active.value and expected < utcnow(),
-        )
-
-    @app.post("/journeys", response_model=JourneyOut, status_code=201)
-    def create_journey(
-        payload: JourneyCreateIn,
-        current: User = Depends(get_current_user),
-        db: Session = Depends(get_db),
-    ):
-        active = db.scalar(select(Journey).where(and_(Journey.owner_id == current.id, Journey.state == JourneyState.active.value)))
-        if active:
-            raise HTTPException(status_code=409, detail="A Journey Guard session is already active")
-        now = utcnow()
-        journey = Journey(
-            owner_id=current.id,
-            destination_label=payload.destination_label.strip(),
-            expected_arrival_at=now + timedelta(minutes=payload.duration_minutes),
-            state=JourneyState.active.value,
-            start_latitude=payload.start_latitude,
-            start_longitude=payload.start_longitude,
-            updated_at=now,
-        )
-        db.add(journey)
-        db.flush()
-        audit(db, "journey_started", current.id, journey.id, journey.destination_label)
-        db.commit()
-        db.refresh(journey)
-        return journey_out(db, journey)
-
-    @app.get("/journeys/active", response_model=JourneyOut)
-    def active_journey(current: User = Depends(get_current_user), db: Session = Depends(get_db)):
-        journey = db.scalar(
-            select(Journey)
-            .where(and_(Journey.owner_id == current.id, Journey.state == JourneyState.active.value))
-            .order_by(Journey.created_at.desc())
-        )
-        if not journey:
-            raise HTTPException(status_code=404, detail="No active Journey Guard session")
-        return journey_out(db, journey)
-
-    @app.get("/journeys/history", response_model=list[JourneyOut])
-    def journey_history(current: User = Depends(get_current_user), db: Session = Depends(get_db)):
-        journeys = db.scalars(select(Journey).where(Journey.owner_id == current.id).order_by(Journey.created_at.desc())).all()
-        return [journey_out(db, j) for j in journeys]
-
-    @app.post("/journeys/{journey_id}/safe", response_model=JourneyOut)
-    def complete_journey(journey_id: str, current: User = Depends(get_current_user), db: Session = Depends(get_db)):
-        journey = db.get(Journey, journey_id)
-        if not journey or journey.owner_id != current.id:
-            raise HTTPException(status_code=404, detail="Journey not found")
-        if journey.state == JourneyState.active.value:
-            now = utcnow()
-            journey.state = JourneyState.safe.value
-            journey.updated_at = now
-            journey.completed_at = now
-            audit(db, "journey_safe", current.id, journey.id, journey.destination_label)
-            db.commit()
-            db.refresh(journey)
-        return journey_out(db, journey)
-
-    @app.post("/journeys/{journey_id}/cancel", response_model=JourneyOut)
-    def cancel_journey(journey_id: str, current: User = Depends(get_current_user), db: Session = Depends(get_db)):
-        journey = db.get(Journey, journey_id)
-        if not journey or journey.owner_id != current.id:
-            raise HTTPException(status_code=404, detail="Journey not found")
-        if journey.state == JourneyState.active.value:
-            now = utcnow()
-            journey.state = JourneyState.cancelled.value
-            journey.updated_at = now
-            journey.completed_at = now
-            audit(db, "journey_cancelled", current.id, journey.id, journey.destination_label)
-            db.commit()
-            db.refresh(journey)
-        return journey_out(db, journey)
-
-    @app.get("/journeys/inbox", response_model=list[JourneyOut])
-    def journey_inbox(current: User = Depends(get_current_user), db: Session = Depends(get_db)):
-        owner_ids = db.scalars(
-            select(TrustedContact.owner_id).where(
-                and_(
-                    TrustedContact.contact_user_id == current.id,
-                    TrustedContact.status == ContactStatus.active.value,
-                )
-            )
-        ).all()
-        if not owner_ids:
-            return []
-        journeys = db.scalars(
-            select(Journey)
-            .where(and_(Journey.owner_id.in_(owner_ids), Journey.state == JourneyState.active.value))
-            .order_by(Journey.expected_arrival_at.asc())
-        ).all()
-        return [journey_out(db, j) for j in journeys]
+    # Journey Guard was intentionally removed from the V1.4.1 product surface.
+    # The legacy table is retained for non-destructive database compatibility.
 
     @app.get("/audit/recent", response_model=list[AuditEventOut])
     def recent_audit(current: User = Depends(get_current_user), db: Session = Depends(get_db)):

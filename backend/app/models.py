@@ -26,10 +26,6 @@ class AlertState(str, Enum):
     resolved = "resolved"
 
 
-class JourneyState(str, Enum):
-    active = "active"
-    safe = "safe"
-    cancelled = "cancelled"
 
 
 class User(Base):
@@ -123,35 +119,22 @@ class AlertLocation(Base):
     alert: Mapped[Alert] = relationship(back_populates="locations")
 
 
-class SafetyPresence(Base):
-    """Opt-in, short-lived, coarse presence.
+class SafetyPresenceDevice(Base):
+    """Per-installation anonymous Safety Presence.
 
-    Exact locations are never stored for Safety Presence. Coordinates are
-    quantised before persistence and rows expire logically after 120 seconds.
+    A device-scoped random identifier lets two phones signed into the same
+    account appear as separate nearby devices. The identifier is never returned
+    by the nearby API, and only coarse coordinates are stored.
     """
 
-    __tablename__ = "safety_presence"
+    __tablename__ = "safety_presence_devices"
 
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    device_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    owner_user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     coarse_latitude: Mapped[float] = mapped_column(Float)
     coarse_longitude: Mapped[float] = mapped_column(Float)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
-
-
-class Journey(Base):
-    __tablename__ = "journeys"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    owner_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    destination_label: Mapped[str] = mapped_column(String(120))
-    expected_arrival_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    state: Mapped[str] = mapped_column(String(20), default=JourneyState.active.value, index=True)
-    start_latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
-    start_longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class AuditEvent(Base):

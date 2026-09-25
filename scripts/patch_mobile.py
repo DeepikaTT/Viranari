@@ -29,10 +29,14 @@ if main_activity.exists():
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
+import android.provider.Settings
 import android.telephony.SmsManager
 import android.telephony.SubscriptionManager
 import android.telephony.TelephonyManager
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -40,18 +44,64 @@ import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
     private val smsChannel = "viranari/sms"
+    private val smsPermissionRequestCode = 9141
+    private var pendingSmsPermissionResult: MethodChannel.Result? = null
+
+    private fun permissionDeclared(permission: String): Boolean {
+        return try {
+            val info = if (Build.VERSION.SDK_INT >= 33) {
+                packageManager.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(PackageManager.GET_PERMISSIONS.toLong()))
+            } else {
+                @Suppress("DEPRECATION")
+                packageManager.getPackageInfo(packageName, PackageManager.GET_PERMISSIONS)
+            }
+            info.requestedPermissions?.contains(permission) == true
+        } catch (_: Exception) {
+            false
+        }
+    }
 
     private fun smsCapability(): Map<String, Any> {
         val capable = packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY_MESSAGING)
         val telephony = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
-        val simReady = telephony.simState == TelephonyManager.SIM_STATE_READY
+        val simReady = try { telephony.simState == TelephonyManager.SIM_STATE_READY } catch (_: Exception) { false }
         val defaultSubId = SubscriptionManager.getDefaultSmsSubscriptionId()
+        val declared = permissionDeclared(Manifest.permission.SEND_SMS)
+        val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.SEND_SMS) == PackageManager.PERMISSION_GRANTED
         return mapOf(
             "capable" to capable,
             "sim_ready" to simReady,
             "default_subscription_id" to defaultSubId,
-            "subscription_ready" to (defaultSubId != SubscriptionManager.INVALID_SUBSCRIPTION_ID)
+            "subscription_ready" to (defaultSubId != SubscriptionManager.INVALID_SUBSCRIPTION_ID),
+            "permission_declared" to declared,
+            "permission_granted" to granted
         )
+    }
+
+    private fun requestSmsPermission(result: MethodChannel.Result) {
+        if (!permissionDeclared(Manifest.permission.SEND_SMS)) {
+            result.success(false)
+            return
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.SEND_SMS) == PackageManager.PERMISSION_GRANTED) {
+            result.success(true)
+            return
+        }
+        if (pendingSmsPermissionResult != null) {
+            result.error("SMS_PERMISSION_BUSY", "An SMS permission request is already open.", null)
+            return
+        }
+        pendingSmsPermissionResult = result
+        ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.SEND_SMS), smsPermissionRequestCode)
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == smsPermissionRequestCode) {
+            val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
+            pendingSmsPermissionResult?.success(granted)
+            pendingSmsPermissionResult = null
+        }
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -59,6 +109,15 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, smsChannel).setMethodCallHandler { call, result ->
             when (call.method) {
                 "smsCapability" -> result.success(smsCapability())
+                "requestSmsPermission" -> requestSmsPermission(result)
+                "openSmsSettings" -> {
+                    try {
+                        startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS))
+                        result.success(null)
+                    } catch (e: Exception) {
+                        result.error("SMS_SETTINGS", e.message ?: "Could not open SIM settings", null)
+                    }
+                }
                 "sendSms" -> {
                     if (ContextCompat.checkSelfPermission(this, Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) {
                         result.error("SMS_PERMISSION", "SEND_SMS permission is not granted.", null)
@@ -133,4 +192,4 @@ if plist.exists():
         text = text.replace("</dict>", "".join(additions) + "</dict>", 1)
         plist.write_text(text)
 
-print("Mobile platform files patched for ViraNari v1.4 Reliable Response.")
+print("Mobile platform files patched for ViraNari v1.4.1 Live Map hotfix.")

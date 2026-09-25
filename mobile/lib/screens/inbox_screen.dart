@@ -21,7 +21,6 @@ class InboxScreen extends StatefulWidget {
 
 class _InboxScreenState extends State<InboxScreen> {
   List<InboxAlert> _items = const [];
-  List<JourneyRecord> _journeys = const [];
   bool _loading = true;
   bool _polling = false;
   bool _firstLoad = true;
@@ -47,13 +46,11 @@ class _InboxScreenState extends State<InboxScreen> {
     _polling = true;
     if (!silent && mounted) setState(() { _loading = true; _error = null; });
     try {
-      final values = await Future.wait([widget.session.api.inbox(), widget.session.api.journeyInbox()]);
-      final data = values[0] as List<InboxAlert>;
-      final journeys = values[1] as List<JourneyRecord>;
+      final data = await widget.session.api.inbox();
       final newActive = data.where((a) => a.isActive && !_knownIds.contains(a.alertId)).toList();
       final previousIds = _knownIds;
       _knownIds = data.map((e) => e.alertId).toSet();
-      if (mounted) setState(() { _items = data; _journeys = journeys; });
+      if (mounted) setState(() => _items = data);
 
       if (!_firstLoad && previousIds.isNotEmpty && newActive.isNotEmpty && mounted) {
         final newest = newActive.first;
@@ -128,7 +125,6 @@ class _InboxScreenState extends State<InboxScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final overdue = _journeys.where((j) => j.overdue).toList();
     return RefreshIndicator(
       onRefresh: _load,
       child: ListView(
@@ -136,19 +132,7 @@ class _InboxScreenState extends State<InboxScreen> {
         children: [
           Text('Response', style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w900, color: ViraColors.plum)),
           const SizedBox(height: 4),
-          const Text('Emergencies and Journey Guard check-ins from people who trust you.', style: TextStyle(color: ViraColors.mutedPlum)),
-          if (overdue.isNotEmpty) ...[
-            const SizedBox(height: 18),
-            Text('Needs attention', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900)),
-            const SizedBox(height: 8),
-            ...overdue.map((j) => _JourneyRow(journey: j, onCall: () => _call(j.ownerPhoneE164))),
-          ],
-          if (_journeys.where((j) => !j.overdue).isNotEmpty) ...[
-            const SizedBox(height: 16),
-            Text('Journey Guard', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900)),
-            const SizedBox(height: 4),
-            ..._journeys.where((j) => !j.overdue).map((j) => _JourneyRow(journey: j, onCall: () => _call(j.ownerPhoneE164))),
-          ],
+          const Text('Emergency alerts from people who trust you.', style: TextStyle(color: ViraColors.mutedPlum)),
           const SizedBox(height: 20),
           Row(
             children: [
@@ -258,34 +242,3 @@ class _EmergencyRow extends StatelessWidget {
       );
 }
 
-class _JourneyRow extends StatelessWidget {
-  const _JourneyRow({required this.journey, required this.onCall});
-  final JourneyRecord journey;
-  final VoidCallback onCall;
-
-  @override
-  Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 7),
-        child: Row(
-          children: [
-            Icon(journey.overdue ? Icons.timer_off_rounded : Icons.route_rounded, color: journey.overdue ? ViraColors.pinkDark : ViraColors.success),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('${journey.ownerName} → ${journey.destinationLabel}', style: const TextStyle(fontWeight: FontWeight.w900)),
-                  Text(
-                    journey.overdue
-                        ? 'Overdue since ${DateFormat('h:mm a').format(journey.expectedArrivalAt.toLocal())}'
-                        : 'Expected ${DateFormat('h:mm a').format(journey.expectedArrivalAt.toLocal())}',
-                    style: TextStyle(color: journey.overdue ? ViraColors.pinkDark : ViraColors.mutedPlum),
-                  ),
-                ],
-              ),
-            ),
-            if (journey.ownerPhoneE164 != null) IconButton(onPressed: onCall, icon: const Icon(Icons.call_outlined)),
-          ],
-        ),
-      );
-}

@@ -1,7 +1,7 @@
 name: viranari_app
-description: ViraNari v1.4 Reliable Response with heartbeat tracking, Journey Guard, Safety Presence, and cleaner UI.
+description: ViraNari v1.4.1 Live Map hotfix with reliable tracking, SMS diagnostics, and device-based Safety Presence.
 publish_to: 'none'
-version: 1.4.0+16
+version: 1.4.1+17
 
 environment:
   sdk: '>=3.13.0 <4.0.0'

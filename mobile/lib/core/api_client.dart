@@ -233,60 +233,21 @@ class ApiClient {
 
   Future<void> acknowledge(String alertId) async => _post('/alerts/$alertId/acknowledge', const {});
 
-  Future<void> updatePresence({required double latitude, required double longitude, bool enabled = true}) async {
-    await _post('/presence', {'latitude': latitude, 'longitude': longitude, 'enabled': enabled});
+  Future<void> updatePresence({required String deviceId, required double latitude, required double longitude, bool enabled = true}) async {
+    await _post('/presence', {'device_id': deviceId, 'latitude': latitude, 'longitude': longitude, 'enabled': enabled});
   }
 
-  Future<void> disablePresence() async {
-    await _delete('/presence');
+  Future<void> disablePresence(String deviceId) async {
+    await _delete('/presence?device_id=${Uri.encodeQueryComponent(deviceId)}');
   }
 
   Future<List<PresencePoint>> nearbyPresence({
+    required String deviceId,
     required double latitude,
     required double longitude,
     int radiusM = 1500,
   }) async =>
-      (await _get('/presence/nearby?latitude=$latitude&longitude=$longitude&radius_m=$radiusM') as List<dynamic>)
+      (await _get('/presence/nearby?device_id=${Uri.encodeQueryComponent(deviceId)}&latitude=$latitude&longitude=$longitude&radius_m=$radiusM') as List<dynamic>)
           .map((e) => PresencePoint.fromJson(e as Map<String, dynamic>))
-          .toList();
-
-  Future<JourneyRecord> startJourney({
-    required String destinationLabel,
-    required int durationMinutes,
-    double? startLatitude,
-    double? startLongitude,
-  }) async =>
-      JourneyRecord.fromJson(
-        await _post('/journeys', {
-          'destination_label': destinationLabel,
-          'duration_minutes': durationMinutes,
-          'start_latitude': startLatitude,
-          'start_longitude': startLongitude,
-        }),
-      );
-
-  Future<JourneyRecord?> activeJourney() async {
-    try {
-      return JourneyRecord.fromJson(await _get('/journeys/active') as Map<String, dynamic>);
-    } on ApiException catch (e) {
-      if (e.statusCode == 404) return null;
-      rethrow;
-    }
-  }
-
-  Future<JourneyRecord> markJourneySafe(String journeyId) async =>
-      JourneyRecord.fromJson(await _post('/journeys/$journeyId/safe', const {}));
-
-  Future<JourneyRecord> cancelJourney(String journeyId) async =>
-      JourneyRecord.fromJson(await _post('/journeys/$journeyId/cancel', const {}));
-
-  Future<List<JourneyRecord>> journeyInbox() async =>
-      (await _get('/journeys/inbox') as List<dynamic>)
-          .map((e) => JourneyRecord.fromJson(e as Map<String, dynamic>))
-          .toList();
-
-  Future<List<JourneyRecord>> journeyHistory() async =>
-      (await _get('/journeys/history') as List<dynamic>)
-          .map((e) => JourneyRecord.fromJson(e as Map<String, dynamic>))
           .toList();
 }

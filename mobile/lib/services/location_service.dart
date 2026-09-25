@@ -27,7 +27,7 @@ class LocationService {
   Future<Position> current() async {
     await ensurePermission();
     return Geolocator.getCurrentPosition(
-      locationSettings: const LocationSettings(
+      locationSettings: LocationSettings(
         accuracy: LocationAccuracy.bestForNavigation,
         timeLimit: Duration(seconds: 12),
       ),
@@ -38,7 +38,7 @@ class LocationService {
     await ensurePermission();
     LocationSettings settings;
     if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
-      settings = const AndroidSettings(
+      settings = AndroidSettings(
         accuracy: LocationAccuracy.bestForNavigation,
         distanceFilter: 0,
         intervalDuration: Duration(seconds: 5),
@@ -50,7 +50,7 @@ class LocationService {
         ),
       );
     } else if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
-      settings = const AppleSettings(
+      settings = AppleSettings(
         accuracy: LocationAccuracy.bestForNavigation,
         activityType: ActivityType.otherNavigation,
         distanceFilter: 0,
@@ -58,7 +58,7 @@ class LocationService {
         showBackgroundLocationIndicator: true,
       );
     } else {
-      settings = const LocationSettings(
+      settings = LocationSettings(
         accuracy: LocationAccuracy.bestForNavigation,
         distanceFilter: 0,
       );
