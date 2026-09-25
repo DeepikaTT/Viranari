@@ -1,26 +1,34 @@
-ViraNari v1.2 backend validation
-================================
-17 tests passed.
+ViraNari v1.3 validation
+========================
 
-Covered:
-- account registration/login
-- duplicate email rejection
-- consent-based trusted contacts
-- idempotent SOS creation
-- server-confirmed inbox delivery
-- recipient acknowledgement
+Backend test suite executed in the build environment:
+22 passed in 4.06s
+
+Coverage includes:
+- authentication
+- Trusted Circle consent
+- idempotent SOS
+- delivery acknowledgement
 - access control
-- removed-contact behavior
+- contact removal
 - live location updates
-- recipient visibility of latest location/battery/network
-- location timeline persistence
-- active emergency restoration endpoint
-- safe resolution
-- false-alarm cancellation
-- post-cancel location rejection
-- owner-only session termination
-- database persistence across app restart
-- TEST drill labelling
-- multi-recipient SOS fan-out
+- persistent location timeline
+- active / resolved / cancelled session states
+- restart persistence
+- practice alerts
+- multiple trusted recipients
+- E.164 phone registration/update
+- phone privacy until consent
+- sender phone exposure to accepted responder
+- speed / heading persistence
+- timezone-aware UTC API output
+- automatic upgrade of an older SQLite schema
 
-Flutter source was reviewed against current package APIs, but this build environment does not contain Flutter itself. Run `flutter analyze` and `flutter run` on the user's configured Arch/Flutter machine before claiming the Android APK itself is validated.
+Flutter source could not be compiled in this build container because Flutter SDK is not installed here.
+Run locally on the configured Arch workstation:
+
+  ./scripts/prepare_mobile.fish
+  cd mobile
+  flutter analyze
+  flutter test
+  flutter run --dart-define=VIRANARI_API_BASE=<your API>

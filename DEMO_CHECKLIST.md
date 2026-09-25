@@ -1,19 +1,35 @@
-# ViraNari v1.2 demo checklist
+# ViraNari v1.3 demo checklist
 
-- [ ] Backend `/health` returns version `1.2.0`
-- [ ] `./scripts/test_backend.fish` passes
-- [ ] Pixel emulator boots
-- [ ] App registers/logs in
-- [ ] Two accounts can consent into Trusted Circle
-- [ ] Practice Mode sends a clearly labelled TEST alert
-- [ ] Real SOS captures emulator/phone GPS
-- [ ] Emergency shows ACTIVE immediately
-- [ ] Recipient inbox receives alert while app is running
-- [ ] Sender shows SENT / DELIVERED / ACKNOWLEDGED accurately
-- [ ] Change emulator location and verify `Last location` updates
-- [ ] Open map from recipient alert
-- [ ] End emergency with `I'm safe`
-- [ ] Turn backend off, trigger SOS, verify offline retry queue
-- [ ] Restart backend and verify queue reconciliation
-- [ ] Test low battery display if physical device/emulator permits
-- [ ] Explain that push background reception needs Firebase/APNs credentials; do not fake it
+## Before demo
+- [ ] Backend `/health` returns v1.3.0.
+- [ ] Sender and responder accounts have E.164 phone numbers.
+- [ ] Trusted Circle invitation accepted.
+- [ ] Sender opened Circle once to cache trusted phone numbers.
+- [ ] Android SMS permission prepared if demonstrating SMS fallback.
+- [ ] Sender location permission granted.
+- [ ] Responder has internet for the live map tiles.
+
+## Demo A — live tracking
+1. Sender holds SOS.
+2. Sender Home shows phone GPS fix and server sync timestamps changing.
+3. Responder opens Inbox → Live Track.
+4. Change sender emulator GPS / physically move phone.
+5. Marker moves and trail grows.
+6. Responder acknowledges; sender sees acknowledgement count.
+
+## Demo B — Last Seen
+1. Keep SOS active.
+2. Disconnect sender internet.
+3. Sender continues GPS collection and queues points.
+4. Responder retains the last known marker.
+5. Freshness transitions LIVE → DELAYED → LAST SEEN.
+6. Restore internet and confirm queued points sync.
+
+## Demo C — SMS fallback (Android team devices only)
+1. Ensure SMS fallback was prepared before starting.
+2. Stop backend / disable mobile data while cellular SMS service remains available.
+3. Trigger a non-Practice SOS on a controlled test phone.
+4. SOS is queued locally and an SMS is dispatched to cached trusted numbers.
+5. Restore internet and let the API queue reconcile.
+
+Never demonstrate a real emergency message to an uninvolved person.

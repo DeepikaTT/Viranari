@@ -39,11 +39,16 @@ class AppSession extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> register(String name, String email, String password) async {
-    final result = await api.register(name, email, password);
+  Future<void> register(String name, String email, String password, {String? phoneE164}) async {
+    final result = await api.register(name, email, password, phoneE164: phoneE164);
     api.accessToken = result.token;
     user = result.user;
     await store.saveToken(result.token);
+    notifyListeners();
+  }
+
+  Future<void> updatePhone(String phoneE164) async {
+    user = await api.updatePhone(phoneE164);
     notifyListeners();
   }
 

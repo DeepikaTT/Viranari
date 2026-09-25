@@ -260,3 +260,122 @@ def test_17_multiple_trusted_contacts_receive_same_alert(client):
     assert len(alert["recipients"]) == 2
     assert len(client.get("/alerts/inbox", headers=auth(maya["access_token"])).json()) == 1
     assert len(client.get("/alerts/inbox", headers=auth(riya["access_token"])).json()) == 1
+
+
+def test_18_phone_number_can_be_registered_and_updated(client):
+    user = register(client, "Asha", "asha@example.com", phone_e164="+919876543210")
+    assert user["user"]["phone_e164"] == "+919876543210"
+    updated = client.patch(
+        "/me/phone",
+        headers=auth(user["access_token"]),
+        json={"phone_e164": "+919999888877"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["phone_e164"] == "+919999888877"
+
+
+def test_19_pending_contact_phone_is_private_until_consent(client):
+    owner = register(client, "Asha", "asha@example.com", phone_e164="+919111111111")
+    contact = register(client, "Maya", "maya@example.com", phone_e164="+919222222222")
+    invite = client.post(
+        "/contacts/invite",
+        headers=auth(owner["access_token"]),
+        json={"email": "maya@example.com", "alias": "Sister"},
+    )
+    assert invite.status_code == 201
+    assert invite.json()["contact_phone_e164"] is None
+    accepted = client.post(
+        "/contacts/accept",
+        headers=auth(contact["access_token"]),
+        json={"invite_token": invite.json()["invite_token"]},
+    )
+    assert accepted.status_code == 200
+    listed = client.get("/contacts", headers=auth(owner["access_token"])).json()
+    assert listed[0]["contact_phone_e164"] == "+919222222222"
+
+
+def test_20_recipient_can_call_sender_number_during_sos(client):
+    owner = register(client, "Asha", "asha@example.com", phone_e164="+919111111111")
+    contact = register(client, "Maya", "maya@example.com", phone_e164="+919222222222")
+    invite = client.post(
+        "/contacts/invite",
+        headers=auth(owner["access_token"]),
+        json={"email": "maya@example.com", "alias": "Sister"},
+    ).json()
+    client.post(
+        "/contacts/accept",
+        headers=auth(contact["access_token"]),
+        json={"invite_token": invite["invite_token"]},
+    )
+    _alert(client, owner, "sender-phone-01")
+    inbox = client.get("/alerts/inbox", headers=auth(contact["access_token"]))
+    assert inbox.status_code == 200
+    assert inbox.json()[0]["sender_phone_e164"] == "+919111111111"
+
+
+def test_21_location_speed_heading_and_utc_are_preserved(client):
+    owner, contact, _ = _pair(client)
+    alert = _alert(client, owner, "live-motion-01").json()
+    update = client.post(
+        f"/alerts/{alert['id']}/location",
+        headers=auth(owner["access_token"]),
+        json={
+            "latitude": 17.401,
+            "longitude": 78.501,
+            "accuracy_m": 3.0,
+            "battery_percent": 51,
+            "network_state": "mobile",
+            "speed_mps": 1.5,
+            "heading_deg": 42.0,
+        },
+    )
+    assert update.status_code == 200
+    timeline = client.get(f"/alerts/{alert['id']}/locations", headers=auth(contact["access_token"]))
+    assert timeline.status_code == 200
+    latest = timeline.json()[-1]
+    assert latest["speed_mps"] == 1.5
+    assert latest["heading_deg"] == 42.0
+    # API timestamps must carry an explicit UTC offset so Flutter can safely .toLocal().
+    assert latest["recorded_at"].endswith("Z") or "+00:00" in latest["recorded_at"]
+
+
+def test_22_existing_v12_sqlite_schema_is_upgraded_in_place(tmp_path):
+    import sqlite3
+
+    db_path = tmp_path / "old.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE users (
+            id VARCHAR(36) PRIMARY KEY,
+            name VARCHAR(80),
+            email VARCHAR(255),
+            password_hash TEXT,
+            created_at DATETIME
+        );
+        CREATE TABLE alert_locations (
+            id VARCHAR(36) PRIMARY KEY,
+            alert_id VARCHAR(36),
+            latitude FLOAT,
+            longitude FLOAT,
+            accuracy_m FLOAT,
+            battery_percent INTEGER,
+            network_state VARCHAR(40),
+            recorded_at DATETIME
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    from app.db import apply_compat_migrations, build_engine
+
+    engine = build_engine(str(db_path))
+    apply_compat_migrations(engine)
+    conn = sqlite3.connect(db_path)
+    user_cols = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+    loc_cols = {row[1] for row in conn.execute("PRAGMA table_info(alert_locations)")}
+    conn.close()
+    assert "phone_e164" in user_cols
+    assert "speed_mps" in loc_cols
+    assert "heading_deg" in loc_cols

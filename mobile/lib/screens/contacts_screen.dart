@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../core/api_client.dart';
 import '../core/models.dart';
 import '../core/session.dart';
+import '../core/storage.dart';
 import '../core/theme.dart';
 
 class ContactsScreen extends StatefulWidget {
@@ -15,6 +16,7 @@ class ContactsScreen extends StatefulWidget {
 }
 
 class _ContactsScreenState extends State<ContactsScreen> {
+  final _phoneStore = TrustedPhoneStore();
   List<TrustedContact> _contacts = const [];
   bool _loading = true;
   String? _error;
@@ -32,11 +34,48 @@ class _ContactsScreenState extends State<ContactsScreen> {
     });
     try {
       final contacts = await widget.session.api.contacts();
+      await _phoneStore.saveFromContacts(contacts);
       if (mounted) setState(() => _contacts = contacts);
     } on ApiException catch (e) {
       if (mounted) setState(() => _error = e.message);
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  bool _validPhone(String value) => RegExp(r'^\+[1-9][0-9]{7,14}$').hasMatch(value);
+
+  Future<void> _editOwnPhone() async {
+    final controller = TextEditingController(text: widget.session.user?.phoneE164 ?? '+91');
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Your SMS/call number'),
+        content: TextField(
+          controller: controller,
+          keyboardType: TextInputType.phone,
+          decoration: const InputDecoration(
+            labelText: 'International format',
+            helperText: 'Example: +919876543210',
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Save')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final phone = controller.text.trim().replaceAll(' ', '');
+    if (!_validPhone(phone)) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Use +country-code format, e.g. +919876543210.')));
+      return;
+    }
+    try {
+      await widget.session.updatePhone(phone);
+      if (mounted) setState(() {});
+    } on ApiException catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
     }
   }
 
@@ -74,7 +113,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('Share this one-time code with your trusted contact. They must sign in and accept it before they receive SOS alerts.'),
+              const Text('Share this one-time code. Their phone number stays private until they accept the Trusted Circle invitation.'),
               const SizedBox(height: 16),
               SelectableText(contact.inviteToken ?? '', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: ViraColors.plum)),
             ],
@@ -112,7 +151,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
     if (ok != true || code.text.trim().isEmpty) return;
     try {
       await widget.session.api.acceptInvite(code.text.trim());
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('You are now an active trusted contact.')));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Trusted Circle consent accepted.')));
     } on ApiException catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
     }
@@ -123,7 +162,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Remove trusted contact?'),
-        content: Text('${contact.name} will not receive future SOS alerts from you.'),
+        content: Text('${contact.name} will not receive future SOS alerts or SMS fallback from you.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Keep')),
           FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Remove')),
@@ -144,8 +183,26 @@ class _ContactsScreenState extends State<ContactsScreen> {
         children: [
           Text('Trusted Circle', style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w900, color: ViraColors.plum)),
           const SizedBox(height: 6),
-          const Text('Every contact must opt in before they can receive your SOS.', style: TextStyle(color: ViraColors.mutedPlum)),
-          const SizedBox(height: 18),
+          const Text('Accepted contacts can receive SOS alerts. Their phone numbers are cached securely for SMS fallback.', style: TextStyle(color: ViraColors.mutedPlum)),
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(color: ViraColors.successSoft, borderRadius: BorderRadius.circular(20)),
+            child: Row(
+              children: [
+                const Icon(Icons.sim_card_outlined, color: ViraColors.success),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    const Text('Your emergency number', style: TextStyle(fontWeight: FontWeight.w900)),
+                    Text(widget.session.user?.phoneE164 ?? 'Not configured', style: const TextStyle(color: ViraColors.mutedPlum)),
+                  ]),
+                ),
+                TextButton(onPressed: _editOwnPhone, child: const Text('Edit')),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
           Row(
             children: [
               Expanded(child: FilledButton.icon(onPressed: _invite, icon: const Icon(Icons.person_add_alt_1), label: const Text('Invite'))),
@@ -162,43 +219,36 @@ class _ContactsScreenState extends State<ContactsScreen> {
             Container(
               padding: const EdgeInsets.all(24),
               decoration: BoxDecoration(color: ViraColors.lilac, borderRadius: BorderRadius.circular(24)),
-              child: const Column(
-                children: [
-                  Icon(Icons.group_outlined, size: 44, color: ViraColors.plum),
-                  SizedBox(height: 12),
-                  Text('No trusted contacts yet', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 18)),
-                  SizedBox(height: 5),
-                  Text('Invite someone who already has a ViraNari account.', textAlign: TextAlign.center),
-                ],
-              ),
+              child: const Column(children: [
+                Icon(Icons.group_outlined, size: 44, color: ViraColors.plum),
+                SizedBox(height: 12),
+                Text('No trusted contacts yet', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 18)),
+                SizedBox(height: 5),
+                Text('Invite someone who already has a ViraNari account.', textAlign: TextAlign.center),
+              ]),
             )
           else
-            ..._contacts.map(
-              (c) => Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20)),
-                  child: Row(
-                    children: [
-                      CircleAvatar(backgroundColor: c.status == 'active' ? ViraColors.successSoft : ViraColors.lilac, child: Icon(c.status == 'active' ? Icons.verified_user : Icons.hourglass_top, color: c.status == 'active' ? ViraColors.success : ViraColors.plum)),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(c.alias, style: const TextStyle(fontWeight: FontWeight.w900)),
-                            Text('${c.name} · ${c.email}', style: const TextStyle(color: ViraColors.mutedPlum)),
-                            Text(c.status.toUpperCase(), style: TextStyle(fontSize: 11, fontWeight: FontWeight.w900, color: c.status == 'active' ? ViraColors.success : ViraColors.warning)),
-                          ],
-                        ),
+            ..._contacts.map((c) => Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20)),
+                    child: Row(children: [
+                      CircleAvatar(
+                        backgroundColor: c.status == 'active' ? ViraColors.successSoft : ViraColors.lilac,
+                        child: Icon(c.status == 'active' ? Icons.verified_user : Icons.hourglass_top, color: c.status == 'active' ? ViraColors.success : ViraColors.plum),
                       ),
+                      const SizedBox(width: 12),
+                      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Text(c.alias, style: const TextStyle(fontWeight: FontWeight.w900)),
+                        Text('${c.name} · ${c.email}', style: const TextStyle(color: ViraColors.mutedPlum)),
+                        if (c.phoneE164 != null) Text('SMS ${c.phoneE164}', style: const TextStyle(color: ViraColors.success, fontWeight: FontWeight.w700)),
+                        Text(c.status.toUpperCase(), style: TextStyle(fontSize: 11, fontWeight: FontWeight.w900, color: c.status == 'active' ? ViraColors.success : ViraColors.warning)),
+                      ])),
                       IconButton(onPressed: () => _remove(c), icon: const Icon(Icons.delete_outline), tooltip: 'Remove'),
-                    ],
+                    ]),
                   ),
-                ),
-              ),
-            ),
+                )),
         ],
       ),
     );

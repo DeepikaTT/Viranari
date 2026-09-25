@@ -17,8 +17,11 @@ def client(tmp_path: Path):
         yield c
 
 
-def register(client, name: str, email: str, password: str = "Password123!"):
-    r = client.post("/auth/register", json={"name": name, "email": email, "password": password})
+def register(client, name: str, email: str, password: str = "Password123!", phone_e164: str | None = None):
+    payload = {"name": name, "email": email, "password": password}
+    if phone_e164 is not None:
+        payload["phone_e164"] = phone_e164
+    r = client.post("/auth/register", json=payload)
     assert r.status_code == 201, r.text
     return r.json()
 

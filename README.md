@@ -1,118 +1,169 @@
-# ViraNari v1.2 — victim-first emergency-response prototype
+# ViraNari v1.3 — Live Safety
 
-ViraNari v1.2 is the continuation of v0.1 through the v1.1/v1.2 milestone. The demo is designed around one principle: **during danger, the user should make as few decisions as possible.**
+ViraNari v1.3 upgrades the hackathon prototype from a static SOS workflow into a resilient **live emergency tracking session** with a Find-My-style trusted-contact view and an SMS fallback path.
 
-## What works now
+## What is implemented
 
-### V1 core
-- Secure register/login (Argon2 password hashing + signed bearer tokens)
-- Consent-based Trusted Circle invitations
-- Press-and-hold SOS with haptic feedback
-- Real GPS capture
-- Persistent emergency records
-- SENT → DELIVERED → ACKNOWLEDGED delivery states
-- Recipient Emergency Inbox
-- Offline encrypted retry queue with idempotency protection
-- SOS history and contact removal
+### Victim app
+- Press-and-hold SOS with real GPS.
+- Active emergency session restored after app restart.
+- Continuous GPS sampling during the active session (5-second target interval, no movement threshold).
+- Android foreground emergency location notification.
+- Local timestamps for **phone GPS fix** vs **last successful server sync**.
+- Bounded encrypted queue for up to 120 unsynced location samples.
+- Automatic replay of queued GPS points when API connectivity returns.
+- Battery and connectivity state attached to location updates.
+- Speed and heading attached when the device provides them.
+- Trusted Circle delivery / acknowledgement counts.
+- Practice mode.
+- Resolve as safe / cancel false alarm.
+- SMS fallback preparation before danger.
+- Android SMS dispatch through the SIM when the API is unreachable.
+- iOS SMS fallback opens the Messages composer; iOS does not silently send arbitrary SMS.
 
-### V1.1 reliability + UX
-- Brand refresh: deep teal, lotus pink, antique gold, warm ivory
-- Connectivity and backend-reachability status
-- Battery percentage + low-battery warning
-- Better emergency-state dashboard
-- Immediate SOS activation; false-alarm cancellation does **not** delay a real alert
-- Practice/Test mode with clear TEST labels
-- Error/retry UX
-- Backend audit events
-- Simple per-user request throttling for SOS/location update endpoints
-- Updated fish scripts with proper error handling
+### Trusted Circle / responder app
+- 3-second inbox refresh while the app is open.
+- Find-My-style **Live Track** screen.
+- In-app OpenStreetMap view with current marker and historical movement trail.
+- LIVE / DELAYED / LAST SEEN freshness state.
+- Keeps the last known marker when updates stop.
+- Last update time displayed in the phone's local timezone.
+- Accuracy, battery, network, speed and direction indicators.
+- Call button when the sender has provided a phone number.
+- Acknowledge button so the victim knows a real person is responding.
 
-### V1.2 live emergency session
-- One active emergency session restored after app restart
-- Live location stream during an active emergency
-- Android foreground location notification so live tracking can continue when the sender app moves to the background, subject to OS permissions/power policy
-- Latest location, battery, and network state sent to backend
-- Location timeline stored on the server
-- Trusted-contact inbox auto-refreshes every 5 seconds while app is running
-- Multiple trusted contacts receive the same SOS
-- Recipient acknowledgement visible to sender
-- Recipient can open latest coordinates in installed Maps app
-- "I'm safe — end emergency" state
-- "Cancel false alarm" state retained in audit/history
+### Trusted phone privacy
+- Users own and update their own E.164 phone number (`+countrycode...`).
+- A contact's phone number is **not disclosed while an invitation is pending**.
+- Phone number becomes available only after that user explicitly accepts the Trusted Circle relationship.
+- Active trusted phone numbers are cached in encrypted device storage so SMS fallback can still work when mobile data is unavailable.
 
-## Important external integration not falsely claimed
+### Backend
+- FastAPI + SQLAlchemy + SQLite for the hackathon build.
+- Argon2 password hashing.
+- JWT authentication.
+- Persistent 64-character development JWT secret is generated automatically if `VIRANARI_JWT_SECRET` is not provided.
+- UTC-safe API serialization so Flutter can convert timestamps correctly to IST / local device time.
+- Explicit compatibility migrations for v1/v1.2 SQLite databases.
+- Audit events and API rate limiting inherited from v1.2.
+- 22 backend tests.
 
-True **background recipient push notifications** require a configured push provider (Firebase Cloud Messaging for Android and APNs/Firebase for iOS) plus project credentials. This source intentionally does not pretend push is working without those credentials. The current recipient app auto-refreshes while running; push is the next production integration.
+## Important limitations
 
-## Run on Arch + fish
+This is a hackathon prototype, not a certified emergency-service product.
 
-### Terminal 1 — backend
+- No Firebase/APNs push yet. Recipient live updates are automatic while ViraNari is running/open.
+- Android direct SMS depends on SIM/service and `SEND_SMS` permission. SMS is not internet-free if there is no cellular network at all.
+- iOS does not silently send SMS; ViraNari opens the Messages composer for the user to approve.
+- OpenStreetMap tiles on the responder Live Track screen require network access unless an offline map layer is added later.
+- Background location behavior still depends on Android/iOS power-management policies and permissions.
+- ViraMesh/BLE multi-hop relay is **not** implemented in v1.3.
 
-```fish
-cd viranari_v1_2
-./scripts/setup_backend.fish
-./scripts/run_backend.fish
+---
+
+## Backend — local/VPS
+
+```bash
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+python run.py
 ```
 
-Health check:
+Default backend port is **3000**.
 
-```fish
-curl http://127.0.0.1:8000/health
+Health:
+
+```bash
+curl http://127.0.0.1:3000/health
 ```
 
-Swagger:
+Docs:
 
-`http://127.0.0.1:8000/docs`
-
-Run backend tests:
-
-```fish
-./scripts/test_backend.fish
+```text
+http://127.0.0.1:3000/docs
 ```
 
-### Terminal 2 — mobile
+For a VPS behind Nginx:
+
+```env
+VIRANARI_HOST=127.0.0.1
+VIRANARI_PORT=3000
+VIRANARI_DB_PATH=/root/Viranari/backend/data/viranari.db
+VIRANARI_JWT_SECRET=<64+ character random secret>
+```
+
+For a quick direct-port test you can use `VIRANARI_HOST=0.0.0.0`, but production should normally expose HTTPS through Nginx and leave Uvicorn bound to localhost.
+
+---
+
+## Flutter — first setup on Arch/fish
+
+From project root:
 
 ```fish
-cd viranari_v1_2
 ./scripts/prepare_mobile.fish
-flutter emulators
-flutter emulators --launch Pixel_7
-cd mobile
-flutter run --dart-define=VIRANARI_API_BASE=http://10.0.2.2:8000
 ```
 
-For a physical Android phone, `10.0.2.2` will not point to the laptop. Put both devices on the same Wi-Fi and run with your laptop LAN IP, for example:
+Then start an emulator and run:
 
 ```fish
-flutter run --dart-define=VIRANARI_API_BASE=http://192.168.1.50:8000
+cd mobile
+flutter devices
+flutter run --dart-define=VIRANARI_API_BASE=http://10.0.2.2:3000
 ```
 
-The backend already listens on `0.0.0.0:8000`.
+Against your VPS API:
 
-## Demo flow
+```fish
+flutter run --dart-define=VIRANARI_API_BASE=https://api.example.com
+```
 
-1. Register Person A and Person B.
-2. A invites B from Trusted Circle; B accepts the consent code.
-3. A holds SOS.
-4. A's GPS + battery + network state are recorded; the emergency becomes ACTIVE immediately.
-5. B's Inbox sees the alert (auto-refresh while app is running) and can open the latest point in Maps.
-6. Move A's emulator GPS or physical phone; new live points are added to the server timeline.
-7. B acknowledges the alert.
-8. A sees acknowledgement count update.
-9. A uses **I'm safe — end emergency** when safe.
-10. Repeat in Practice Mode for a judge-safe test alert.
+For a temporary direct-IP test:
 
-## Database
+```fish
+flutter run --dart-define=VIRANARI_API_BASE=http://YOUR_VPS_IP:3000
+```
 
-The run script uses `backend/data/viranari_v12.db`, intentionally separate from v0.1 so an old prototype database cannot break the new v1.2 schema.
+Use HTTPS for the final demo/release.
 
-## Safety engineering choices
+## Before testing SMS
 
-- No pre-SOS countdown: accidental triggers can be cancelled **after** the alert is created, so help is never delayed by a timer.
-- No fake "message delivered" state: delivery is recorded only when the recipient inbox retrieves the alert.
-- No fake push notification claim without Firebase/APNs credentials.
-- Location sharing is scoped to active emergency sessions rather than permanent tracking.
-- Trusted contacts require consent.
-- Practice alerts are visibly labelled TEST.
+1. Register both users with international-format numbers, e.g. `+919876543210`.
+2. Invite and accept the Trusted Circle relationship.
+3. Open the sender's Trusted Circle screen once while online so accepted numbers are securely cached.
+4. On Home enable **Prepare SMS fallback before danger** and grant the Android SMS permission.
+5. For a test, use Practice Mode first. Practice Mode deliberately does **not** send SMS.
+6. For a real transport test, use test phone numbers / team devices only.
 
-See `VICTIM_FIRST_ROADMAP.md` for the next safety-network ideas.
+## Find-My-style tracking test
+
+On sender phone:
+1. Start SOS.
+2. Grant location permission; for strongest background behavior use `Allow all the time` where available.
+3. Move the emulator GPS coordinates or physically walk with the phone.
+4. Home should show changing `Phone GPS fix` and `Server synced` times.
+
+On trusted-contact phone:
+1. Open Inbox.
+2. Tap **Live Track**.
+3. Marker/trail refreshes every 3 seconds while the screen is open.
+4. Stop sender connectivity: status eventually changes from LIVE → DELAYED → LAST SEEN while preserving the last known marker.
+5. Restore internet: queued sender points replay to the server.
+
+## Backend tests
+
+```bash
+cd backend
+pytest -q
+```
+
+Expected for this source release:
+
+```text
+22 passed
+```
+
+See `UPGRADE_FROM_V1_2.md` before replacing an existing VPS deployment.

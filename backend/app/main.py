@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from .config import Settings, settings as default_settings
-from .db import Base, build_engine, build_session_factory
+from .db import Base, apply_compat_migrations, build_engine, build_session_factory
 from .models import (
     Alert,
     AlertLocation,
@@ -40,6 +40,7 @@ from .schemas import (
     InboxAlertOut,
     LoginIn,
     MessageOut,
+    PhoneUpdateIn,
     RecipientStatusOut,
     RegisterIn,
     TokenOut,
@@ -76,13 +77,14 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
     engine = build_engine(db_path)
     SessionLocal = build_session_factory(engine)
     Base.metadata.create_all(engine)
+    apply_compat_migrations(engine)
 
     app = FastAPI(
         title="ViraNari API",
-        version="1.2.0",
+        version="1.3.0",
         description=(
             "Emergency-response API with consent-based trusted contacts, delivery receipts, "
-            "idempotent offline retry, live emergency sessions, and location updates."
+            "idempotent offline retry, Find-My-style live emergency sessions, SMS-ready trusted contacts, and location updates."
         ),
     )
     app.state.engine = engine
@@ -92,7 +94,7 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=[o.strip() for o in cfg.cors_origins.split(",")] if cfg.cors_origins != "*" else ["*"],
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -120,8 +122,15 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
             raise HTTPException(status_code=401, detail="User no longer exists")
         return user
 
+    def ensure_utc(value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
     def user_out(user: User) -> UserOut:
-        return UserOut(id=user.id, name=user.name, email=user.email)
+        return UserOut(id=user.id, name=user.name, email=user.email, phone_e164=user.phone_e164)
 
     def contact_out(db: Session, contact: TrustedContact, include_token: bool = False) -> ContactOut:
         target = db.get(User, contact.contact_user_id)
@@ -130,11 +139,13 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
             contact_user_id=contact.contact_user_id,
             contact_name=target.name,
             contact_email=target.email,
+            # Phone numbers are disclosed only after the contact explicitly accepts.
+            contact_phone_e164=target.phone_e164 if contact.status == ContactStatus.active.value else None,
             alias=contact.alias,
             status=contact.status,
             invite_token=contact.invite_token if include_token and contact.status == ContactStatus.pending.value else None,
-            invite_expires_at=contact.invite_expires_at,
-            accepted_at=contact.accepted_at,
+            invite_expires_at=ensure_utc(contact.invite_expires_at),
+            accepted_at=ensure_utc(contact.accepted_at),
         )
 
     def alert_query():
@@ -161,8 +172,8 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
                 RecipientStatusOut(
                     recipient_user_id=r.recipient_user_id,
                     recipient_name=recipient.name,
-                    delivered_at=r.delivered_at,
-                    acknowledged_at=r.acknowledged_at,
+                    delivered_at=ensure_utc(r.delivered_at),
+                    acknowledged_at=ensure_utc(r.acknowledged_at),
                 )
             )
         return AlertOut(
@@ -178,21 +189,21 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
             is_test=alert.is_test,
             note=alert.note,
             state=alert.state,
-            created_at=alert.created_at,
-            updated_at=alert.updated_at,
-            cancelled_at=alert.cancelled_at,
-            resolved_at=alert.resolved_at,
+            created_at=ensure_utc(alert.created_at),
+            updated_at=ensure_utc(alert.updated_at),
+            cancelled_at=ensure_utc(alert.cancelled_at),
+            resolved_at=ensure_utc(alert.resolved_at),
             recipients=recipients,
         )
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "service": "viranari-api", "version": "1.2.0"}
+        return {"status": "ok", "service": "viranari-api", "version": "1.3.0"}
 
     @app.post("/auth/register", response_model=TokenOut, status_code=201)
     def register(payload: RegisterIn, db: Session = Depends(get_db)):
         email = payload.email.lower().strip()
-        user = User(name=payload.name.strip(), email=email, password_hash=hash_password(payload.password))
+        user = User(name=payload.name.strip(), email=email, phone_e164=payload.phone_e164, password_hash=hash_password(payload.password))
         db.add(user)
         try:
             db.flush()
@@ -213,6 +224,18 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
 
     @app.get("/me", response_model=UserOut)
     def me(current: User = Depends(get_current_user)):
+        return user_out(current)
+
+    @app.patch("/me/phone", response_model=UserOut)
+    def update_phone(
+        payload: PhoneUpdateIn,
+        current: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ):
+        current.phone_e164 = payload.phone_e164
+        audit(db, "phone_updated", current.id, current.id, "SMS fallback contact number updated")
+        db.commit()
+        db.refresh(current)
         return user_out(current)
 
     @app.get("/contacts", response_model=list[ContactOut])
@@ -346,6 +369,8 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
                 accuracy_m=payload.accuracy_m,
                 battery_percent=payload.battery_percent,
                 network_state=payload.network_state,
+                speed_mps=payload.speed_mps,
+                heading_deg=payload.heading_deg,
                 recorded_at=now,
             )
         )
@@ -440,6 +465,8 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
                 accuracy_m=payload.accuracy_m,
                 battery_percent=payload.battery_percent,
                 network_state=payload.network_state,
+                speed_mps=payload.speed_mps,
+                heading_deg=payload.heading_deg,
                 recorded_at=now,
             )
         )
@@ -470,7 +497,9 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
                 accuracy_m=p.accuracy_m,
                 battery_percent=p.battery_percent,
                 network_state=p.network_state,
-                recorded_at=p.recorded_at,
+                speed_mps=p.speed_mps,
+                heading_deg=p.heading_deg,
+                recorded_at=ensure_utc(p.recorded_at),
             )
             for p in locations
         ]
@@ -531,6 +560,7 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
                     alert_id=alert.id,
                     sender_name=sender.name,
                     sender_email=sender.email,
+                    sender_phone_e164=sender.phone_e164,
                     latitude=alert.latitude,
                     longitude=alert.longitude,
                     accuracy_m=alert.accuracy_m,
@@ -539,10 +569,10 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
                     is_test=alert.is_test,
                     state=alert.state,
                     note=alert.note,
-                    created_at=alert.created_at,
-                    updated_at=alert.updated_at,
-                    delivered_at=recipient.delivered_at,
-                    acknowledged_at=recipient.acknowledged_at,
+                    created_at=ensure_utc(alert.created_at),
+                    updated_at=ensure_utc(alert.updated_at),
+                    delivered_at=ensure_utc(recipient.delivered_at),
+                    acknowledged_at=ensure_utc(recipient.acknowledged_at),
                 )
             )
         if changed:
@@ -582,7 +612,7 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
             .order_by(AuditEvent.created_at.desc())
             .limit(50)
         ).all()
-        return [AuditEventOut(event_type=e.event_type, resource_id=e.resource_id, detail=e.detail, created_at=e.created_at) for e in events]
+        return [AuditEventOut(event_type=e.event_type, resource_id=e.resource_id, detail=e.detail, created_at=ensure_utc(e.created_at)) for e in events]
 
     return app
 

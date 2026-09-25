@@ -3,16 +3,23 @@ from __future__ import annotations
 from datetime import datetime
 from pydantic import BaseModel, EmailStr, Field
 
+PHONE_PATTERN = r"^\+[1-9][0-9]{7,14}$"
+
 
 class RegisterIn(BaseModel):
     name: str = Field(min_length=2, max_length=80)
     email: EmailStr
+    phone_e164: str | None = Field(default=None, pattern=PHONE_PATTERN)
     password: str = Field(min_length=8, max_length=128)
 
 
 class LoginIn(BaseModel):
     email: EmailStr
     password: str
+
+
+class PhoneUpdateIn(BaseModel):
+    phone_e164: str = Field(pattern=PHONE_PATTERN)
 
 
 class TokenOut(BaseModel):
@@ -25,6 +32,7 @@ class UserOut(BaseModel):
     id: str
     name: str
     email: EmailStr
+    phone_e164: str | None = None
 
 
 class ContactCreateIn(BaseModel):
@@ -41,6 +49,7 @@ class ContactOut(BaseModel):
     contact_user_id: str
     contact_name: str
     contact_email: EmailStr
+    contact_phone_e164: str | None = None
     alias: str
     status: str
     invite_token: str | None = None
@@ -55,6 +64,8 @@ class AlertCreateIn(BaseModel):
     accuracy_m: float | None = Field(default=None, ge=0)
     battery_percent: int | None = Field(default=None, ge=0, le=100)
     network_state: str | None = Field(default=None, max_length=40)
+    speed_mps: float | None = Field(default=None, ge=0)
+    heading_deg: float | None = Field(default=None, ge=0, lt=360)
     is_test: bool = False
     note: str | None = Field(default=None, max_length=500)
 
@@ -65,6 +76,8 @@ class AlertLocationIn(BaseModel):
     accuracy_m: float | None = Field(default=None, ge=0)
     battery_percent: int | None = Field(default=None, ge=0, le=100)
     network_state: str | None = Field(default=None, max_length=40)
+    speed_mps: float | None = Field(default=None, ge=0)
+    heading_deg: float | None = Field(default=None, ge=0, lt=360)
 
 
 class AlertLocationOut(BaseModel):
@@ -73,6 +86,8 @@ class AlertLocationOut(BaseModel):
     accuracy_m: float | None
     battery_percent: int | None
     network_state: str | None
+    speed_mps: float | None
+    heading_deg: float | None
     recorded_at: datetime
 
 
@@ -107,6 +122,7 @@ class InboxAlertOut(BaseModel):
     alert_id: str
     sender_name: str
     sender_email: EmailStr
+    sender_phone_e164: str | None = None
     latitude: float
     longitude: float
     accuracy_m: float | None

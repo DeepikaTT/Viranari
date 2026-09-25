@@ -9,8 +9,4 @@ if not test -d .venv
 end
 
 source .venv/bin/activate.fish
-set -gx VIRANARI_DB_PATH "$ROOT/backend/data/viranari_v12.db"
-if not set -q VIRANARI_JWT_SECRET
-    set -gx VIRANARI_JWT_SECRET "local-hackathon-only-change-before-deploy-2026"
-end
 python run.py

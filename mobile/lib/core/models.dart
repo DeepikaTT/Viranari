@@ -1,13 +1,20 @@
+DateTime parseApiTime(String raw) {
+  final hasOffset = raw.endsWith('Z') || RegExp(r'[+-]\d{2}:\d{2}$').hasMatch(raw);
+  return DateTime.parse(hasOffset ? raw : '${raw}Z');
+}
+
 class UserProfile {
-  const UserProfile({required this.id, required this.name, required this.email});
+  const UserProfile({required this.id, required this.name, required this.email, this.phoneE164});
   final String id;
   final String name;
   final String email;
+  final String? phoneE164;
 
   factory UserProfile.fromJson(Map<String, dynamic> json) => UserProfile(
         id: json['id'] as String,
         name: json['name'] as String,
         email: json['email'] as String,
+        phoneE164: json['phone_e164'] as String?,
       );
 }
 
@@ -18,6 +25,7 @@ class TrustedContact {
     required this.email,
     required this.alias,
     required this.status,
+    this.phoneE164,
     this.inviteToken,
   });
 
@@ -26,6 +34,7 @@ class TrustedContact {
   final String email;
   final String alias;
   final String status;
+  final String? phoneE164;
   final String? inviteToken;
 
   factory TrustedContact.fromJson(Map<String, dynamic> json) => TrustedContact(
@@ -34,6 +43,7 @@ class TrustedContact {
         email: json['contact_email'] as String,
         alias: json['alias'] as String,
         status: json['status'] as String,
+        phoneE164: json['contact_phone_e164'] as String?,
         inviteToken: json['invite_token'] as String?,
       );
 }
@@ -46,8 +56,8 @@ class RecipientStatus {
 
   factory RecipientStatus.fromJson(Map<String, dynamic> json) => RecipientStatus(
         name: json['recipient_name'] as String,
-        deliveredAt: json['delivered_at'] == null ? null : DateTime.parse(json['delivered_at'] as String),
-        acknowledgedAt: json['acknowledged_at'] == null ? null : DateTime.parse(json['acknowledged_at'] as String),
+        deliveredAt: json['delivered_at'] == null ? null : parseApiTime(json['delivered_at'] as String),
+        acknowledgedAt: json['acknowledged_at'] == null ? null : parseApiTime(json['acknowledged_at'] as String),
       );
 }
 
@@ -94,20 +104,19 @@ class AlertRecord {
         accuracyM: (json['accuracy_m'] as num?)?.toDouble(),
         batteryPercent: json['battery_percent'] as int?,
         networkState: json['network_state'] as String?,
-        createdAt: DateTime.parse(json['created_at'] as String),
-        updatedAt: DateTime.parse(json['updated_at'] as String),
+        createdAt: parseApiTime(json['created_at'] as String),
+        updatedAt: parseApiTime(json['updated_at'] as String),
         recipients: (json['recipients'] as List<dynamic>? ?? const [])
             .map((e) => RecipientStatus.fromJson(e as Map<String, dynamic>))
             .toList(),
         state: json['state'] as String? ?? 'active',
         isTest: json['is_test'] as bool? ?? false,
         note: json['note'] as String?,
-        cancelledAt: json['cancelled_at'] == null ? null : DateTime.parse(json['cancelled_at'] as String),
-        resolvedAt: json['resolved_at'] == null ? null : DateTime.parse(json['resolved_at'] as String),
+        cancelledAt: json['cancelled_at'] == null ? null : parseApiTime(json['cancelled_at'] as String),
+        resolvedAt: json['resolved_at'] == null ? null : parseApiTime(json['resolved_at'] as String),
       );
 
   bool get isActive => state == 'active';
-
   String get deliveryState {
     if (state == 'cancelled') return 'Cancelled';
     if (state == 'resolved') return 'Resolved';
@@ -129,6 +138,8 @@ class AlertLocationPoint {
     this.accuracyM,
     this.batteryPercent,
     this.networkState,
+    this.speedMps,
+    this.headingDeg,
   });
 
   final double latitude;
@@ -136,6 +147,8 @@ class AlertLocationPoint {
   final double? accuracyM;
   final int? batteryPercent;
   final String? networkState;
+  final double? speedMps;
+  final double? headingDeg;
   final DateTime recordedAt;
 
   factory AlertLocationPoint.fromJson(Map<String, dynamic> json) => AlertLocationPoint(
@@ -144,7 +157,9 @@ class AlertLocationPoint {
         accuracyM: (json['accuracy_m'] as num?)?.toDouble(),
         batteryPercent: json['battery_percent'] as int?,
         networkState: json['network_state'] as String?,
-        recordedAt: DateTime.parse(json['recorded_at'] as String),
+        speedMps: (json['speed_mps'] as num?)?.toDouble(),
+        headingDeg: (json['heading_deg'] as num?)?.toDouble(),
+        recordedAt: parseApiTime(json['recorded_at'] as String),
       );
 }
 
@@ -159,6 +174,7 @@ class InboxAlert {
     required this.updatedAt,
     required this.state,
     required this.isTest,
+    this.senderPhoneE164,
     this.accuracyM,
     this.batteryPercent,
     this.networkState,
@@ -170,6 +186,7 @@ class InboxAlert {
   final String alertId;
   final String senderName;
   final String senderEmail;
+  final String? senderPhoneE164;
   final double latitude;
   final double longitude;
   final double? accuracyM;
@@ -189,17 +206,18 @@ class InboxAlert {
         alertId: json['alert_id'] as String,
         senderName: json['sender_name'] as String,
         senderEmail: json['sender_email'] as String,
+        senderPhoneE164: json['sender_phone_e164'] as String?,
         latitude: (json['latitude'] as num).toDouble(),
         longitude: (json['longitude'] as num).toDouble(),
         accuracyM: (json['accuracy_m'] as num?)?.toDouble(),
         batteryPercent: json['battery_percent'] as int?,
         networkState: json['network_state'] as String?,
-        createdAt: DateTime.parse(json['created_at'] as String),
-        updatedAt: DateTime.parse(json['updated_at'] as String),
+        createdAt: parseApiTime(json['created_at'] as String),
+        updatedAt: parseApiTime(json['updated_at'] as String),
         state: json['state'] as String? ?? 'active',
         isTest: json['is_test'] as bool? ?? false,
-        deliveredAt: json['delivered_at'] == null ? null : DateTime.parse(json['delivered_at'] as String),
-        acknowledgedAt: json['acknowledged_at'] == null ? null : DateTime.parse(json['acknowledged_at'] as String),
+        deliveredAt: json['delivered_at'] == null ? null : parseApiTime(json['delivered_at'] as String),
+        acknowledgedAt: json['acknowledged_at'] == null ? null : parseApiTime(json['acknowledged_at'] as String),
         note: json['note'] as String?,
       );
 }
@@ -212,6 +230,8 @@ class QueuedAlert {
     this.accuracyM,
     this.batteryPercent,
     this.networkState,
+    this.speedMps,
+    this.headingDeg,
     this.isTest = false,
     this.note,
   });
@@ -222,6 +242,8 @@ class QueuedAlert {
   final double? accuracyM;
   final int? batteryPercent;
   final String? networkState;
+  final double? speedMps;
+  final double? headingDeg;
   final bool isTest;
   final String? note;
 
@@ -232,6 +254,8 @@ class QueuedAlert {
         'accuracy_m': accuracyM,
         'battery_percent': batteryPercent,
         'network_state': networkState,
+        'speed_mps': speedMps,
+        'heading_deg': headingDeg,
         'is_test': isTest,
         'note': note,
       };
@@ -243,7 +267,57 @@ class QueuedAlert {
         accuracyM: (json['accuracy_m'] as num?)?.toDouble(),
         batteryPercent: json['battery_percent'] as int?,
         networkState: json['network_state'] as String?,
+        speedMps: (json['speed_mps'] as num?)?.toDouble(),
+        headingDeg: (json['heading_deg'] as num?)?.toDouble(),
         isTest: json['is_test'] as bool? ?? false,
         note: json['note'] as String?,
+      );
+}
+
+class QueuedLocationUpdate {
+  const QueuedLocationUpdate({
+    required this.alertId,
+    required this.latitude,
+    required this.longitude,
+    required this.recordedLocallyAt,
+    this.accuracyM,
+    this.batteryPercent,
+    this.networkState,
+    this.speedMps,
+    this.headingDeg,
+  });
+
+  final String alertId;
+  final double latitude;
+  final double longitude;
+  final double? accuracyM;
+  final int? batteryPercent;
+  final String? networkState;
+  final double? speedMps;
+  final double? headingDeg;
+  final DateTime recordedLocallyAt;
+
+  Map<String, dynamic> toJson() => {
+        'alert_id': alertId,
+        'latitude': latitude,
+        'longitude': longitude,
+        'accuracy_m': accuracyM,
+        'battery_percent': batteryPercent,
+        'network_state': networkState,
+        'speed_mps': speedMps,
+        'heading_deg': headingDeg,
+        'recorded_locally_at': recordedLocallyAt.toUtc().toIso8601String(),
+      };
+
+  factory QueuedLocationUpdate.fromJson(Map<String, dynamic> json) => QueuedLocationUpdate(
+        alertId: json['alert_id'] as String,
+        latitude: (json['latitude'] as num).toDouble(),
+        longitude: (json['longitude'] as num).toDouble(),
+        accuracyM: (json['accuracy_m'] as num?)?.toDouble(),
+        batteryPercent: json['battery_percent'] as int?,
+        networkState: json['network_state'] as String?,
+        speedMps: (json['speed_mps'] as num?)?.toDouble(),
+        headingDeg: (json['heading_deg'] as num?)?.toDouble(),
+        recordedLocallyAt: parseApiTime(json['recorded_locally_at'] as String),
       );
 }

@@ -32,6 +32,7 @@ class User(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     name: Mapped[str] = mapped_column(String(80))
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    phone_e164: Mapped[str | None] = mapped_column(String(16), nullable=True)
     password_hash: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -103,6 +104,8 @@ class AlertLocation(Base):
     accuracy_m: Mapped[float | None] = mapped_column(Float, nullable=True)
     battery_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
     network_state: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    speed_mps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    heading_deg: Mapped[float | None] = mapped_column(Float, nullable=True)
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
     alert: Mapped[Alert] = relationship(back_populates="locations")

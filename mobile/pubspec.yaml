@@ -1,7 +1,7 @@
 name: viranari_app
-description: ViraNari v1.2 emergency-response prototype with live SOS sessions.
+description: ViraNari v1.3 Live Safety prototype with resilient tracking and SMS fallback.
 publish_to: 'none'
-version: 1.2.0+12
+version: 1.3.0+13
 
 environment:
   sdk: '>=3.13.0 <4.0.0'
@@ -18,6 +18,9 @@ dependencies:
   battery_plus: ^7.1.1
   connectivity_plus: ^7.3.1
   url_launcher: ^6.3.2
+  permission_handler: ^12.0.1
+  flutter_map: ^8.2.1
+  latlong2: ^0.9.1
 
 dev_dependencies:
   flutter_test:

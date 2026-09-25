@@ -12,6 +12,7 @@ if manifest.exists():
         '<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />',
         '<uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />',
         '<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />',
+        '<uses-permission android:name="android.permission.SEND_SMS" />',
     ]
     insert = "\n    ".join(p for p in permissions if p not in text)
     if insert:
@@ -21,6 +22,63 @@ if manifest.exists():
     if 'android:usesCleartextTraffic=' not in text:
         text = text.replace('<application\n', '<application\n        android:usesCleartextTraffic="true"\n', 1)
     manifest.write_text(text)
+
+main_activity = root / "android/app/src/main/kotlin/com/viranari/viranari_app/MainActivity.kt"
+if main_activity.exists():
+    main_activity.write_text(r'''package com.viranari.viranari_app
+
+import android.Manifest
+import android.content.pm.PackageManager
+import android.telephony.SmsManager
+import androidx.core.content.ContextCompat
+import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.MethodChannel
+
+class MainActivity : FlutterActivity() {
+    private val smsChannel = "viranari/sms"
+
+    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+        super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, smsChannel).setMethodCallHandler { call, result ->
+            if (call.method != "sendSms") {
+                result.notImplemented()
+                return@setMethodCallHandler
+            }
+
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) {
+                result.error("SMS_PERMISSION", "SEND_SMS permission is not granted.", null)
+                return@setMethodCallHandler
+            }
+
+            val recipients = call.argument<List<String>>("recipients") ?: emptyList()
+            val message = call.argument<String>("message") ?: ""
+            if (recipients.isEmpty() || message.isBlank()) {
+                result.error("SMS_ARGUMENTS", "Recipients and message are required.", null)
+                return@setMethodCallHandler
+            }
+
+            try {
+                @Suppress("DEPRECATION")
+                val smsManager = SmsManager.getDefault()
+                var dispatched = 0
+                recipients.distinct().forEach { number ->
+                    val parts = smsManager.divideMessage(message)
+                    if (parts.size > 1) {
+                        smsManager.sendMultipartTextMessage(number, null, parts, null, null)
+                    } else {
+                        smsManager.sendTextMessage(number, null, message, null, null)
+                    }
+                    dispatched++
+                }
+                result.success(dispatched)
+            } catch (e: Exception) {
+                result.error("SMS_FAILED", e.message ?: "SMS dispatch failed", null)
+            }
+        }
+    }
+}
+''')
 
 plist = root / "ios/Runner/Info.plist"
 if plist.exists():
@@ -47,4 +105,4 @@ if plist.exists():
         text = text.replace("</dict>", "".join(additions) + "</dict>", 1)
         plist.write_text(text)
 
-print("Mobile platform files patched for ViraNari v1.2 local development.")
+print("Mobile platform files patched for ViraNari v1.3 Live Safety.")

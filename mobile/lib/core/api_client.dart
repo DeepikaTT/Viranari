@@ -20,7 +20,7 @@ class ApiClient {
       : baseUrl = baseUrl ??
             const String.fromEnvironment(
               'VIRANARI_API_BASE',
-              defaultValue: 'http://10.0.2.2:8000',
+              defaultValue: 'http://10.0.2.2:3000',
             );
 
   final String baseUrl;
@@ -44,6 +44,20 @@ class ApiClient {
     try {
       final r = await http
           .post(Uri.parse('$baseUrl$path'), headers: _headers, body: jsonEncode(body))
+          .timeout(const Duration(seconds: 8));
+      if (r.statusCode < 200 || r.statusCode >= 300) _throw(r);
+      return jsonDecode(r.body) as Map<String, dynamic>;
+    } on SocketException {
+      throw ApiException('No network connection');
+    } on TimeoutException {
+      throw ApiException('Server response timed out');
+    }
+  }
+
+  Future<Map<String, dynamic>> _patch(String path, Map<String, dynamic> body) async {
+    try {
+      final r = await http
+          .patch(Uri.parse('$baseUrl$path'), headers: _headers, body: jsonEncode(body))
           .timeout(const Duration(seconds: 8));
       if (r.statusCode < 200 || r.statusCode >= 300) _throw(r);
       return jsonDecode(r.body) as Map<String, dynamic>;
@@ -87,8 +101,13 @@ class ApiClient {
     }
   }
 
-  Future<({String token, UserProfile user})> register(String name, String email, String password) async {
-    final data = await _post('/auth/register', {'name': name, 'email': email, 'password': password});
+  Future<({String token, UserProfile user})> register(String name, String email, String password, {String? phoneE164}) async {
+    final data = await _post('/auth/register', {
+      'name': name,
+      'email': email,
+      'password': password,
+      'phone_e164': phoneE164,
+    });
     return (token: data['access_token'] as String, user: UserProfile.fromJson(data['user'] as Map<String, dynamic>));
   }
 
@@ -98,6 +117,10 @@ class ApiClient {
   }
 
   Future<UserProfile> me() async => UserProfile.fromJson(await _get('/me') as Map<String, dynamic>);
+
+  Future<UserProfile> updatePhone(String phoneE164) async => UserProfile.fromJson(
+        await _patch('/me/phone', {'phone_e164': phoneE164}),
+      );
 
   Future<List<TrustedContact>> contacts() async =>
       (await _get('/contacts') as List<dynamic>).map((e) => TrustedContact.fromJson(e as Map<String, dynamic>)).toList();
@@ -146,6 +169,8 @@ class ApiClient {
     double? accuracyM,
     int? batteryPercent,
     String? networkState,
+    double? speedMps,
+    double? headingDeg,
   }) async =>
       AlertRecord.fromJson(
         await _post('/alerts/$alertId/location', {
@@ -154,6 +179,8 @@ class ApiClient {
           'accuracy_m': accuracyM,
           'battery_percent': batteryPercent,
           'network_state': networkState,
+          'speed_mps': speedMps,
+          'heading_deg': headingDeg,
         }),
       );
 

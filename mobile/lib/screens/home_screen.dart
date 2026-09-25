@@ -9,10 +9,13 @@ import 'package:uuid/uuid.dart';
 import '../core/api_client.dart';
 import '../core/models.dart';
 import '../core/session.dart';
+import '../core/storage.dart';
 import '../core/theme.dart';
 import '../services/device_status_service.dart';
 import '../services/location_service.dart';
+import '../services/location_sync_service.dart';
 import '../services/offline_queue.dart';
+import '../services/sms_fallback_service.dart';
 import '../widgets/sos_button.dart';
 import '../widgets/status_chip.dart';
 
@@ -28,16 +31,28 @@ class _HomeScreenState extends State<HomeScreen> {
   final _location = LocationService();
   final _device = DeviceStatusService();
   final _queue = OfflineQueueService();
+  final _phoneStore = TrustedPhoneStore();
+  final _settings = SafetySettingsStore();
+  final _sms = SmsFallbackService();
+  final _locationSync = LocationSyncService();
 
   bool _busy = false;
   bool _backendOnline = false;
   bool _sendingLiveUpdate = false;
   bool _testMode = false;
+  bool _smsReady = false;
+  bool _backgroundAlways = false;
   int _pending = 0;
   int _trustedCount = 0;
+  int _trustedSmsCount = 0;
+  int _queuedLocations = 0;
   int? _battery;
   String _network = 'checking';
   String _message = 'Ready. Press and hold SOS when you need help.';
+  String? _syncError;
+  DateTime? _lastPhoneFix;
+  DateTime? _lastServerSync;
+  Position? _lastPosition;
   AlertRecord? _latest;
   StreamSubscription<Position>? _liveLocationSubscription;
   Timer? _statusTimer;
@@ -57,6 +72,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _bootstrap() async {
+    _smsReady = await _settings.smsFallbackEnabled() && await _sms.isReady();
     await _refreshDeviceStatus();
     await _refreshQueue();
     await _retryPending();
@@ -67,7 +83,8 @@ class _HomeScreenState extends State<HomeScreen> {
       if (active != null) {
         setState(() {
           _latest = active;
-          _message = 'Emergency session restored. Live location sharing is active.';
+          _lastServerSync = active.updatedAt.toLocal();
+          _message = 'Emergency session restored. Live Safety tracking is active.';
         });
         await _startLiveTracking(active.id);
       }
@@ -77,7 +94,11 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _heartbeat() async {
     await _refreshDeviceStatus();
     await _retryPending();
-    if (_latest != null) await _refreshLatest(silent: true);
+    final active = _latest;
+    if (active != null && active.isActive) {
+      await _flushLocationQueue(active.id);
+      await _refreshLatest(silent: true);
+    }
   }
 
   Future<void> _refreshDeviceStatus() async {
@@ -94,13 +115,30 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _refreshContacts() async {
     try {
       final contacts = await widget.session.api.contacts();
-      if (mounted) setState(() => _trustedCount = contacts.where((c) => c.status == 'active').length);
-    } catch (_) {}
+      await _phoneStore.saveFromContacts(contacts);
+      final active = contacts.where((c) => c.status == 'active').toList();
+      final smsCount = active.where((c) => c.phoneE164 != null).length;
+      if (mounted) {
+        setState(() {
+          _trustedCount = active.length;
+          _trustedSmsCount = smsCount;
+        });
+      }
+    } catch (_) {
+      final cached = await _phoneStore.load();
+      if (mounted) setState(() => _trustedSmsCount = cached.length);
+    }
   }
 
   Future<void> _refreshQueue() async {
     final count = await _queue.count();
-    if (mounted) setState(() => _pending = count);
+    final locationCount = await _locationSync.queuedCount();
+    if (mounted) {
+      setState(() {
+        _pending = count;
+        _queuedLocations = locationCount;
+      });
+    }
   }
 
   Future<void> _retryPending() async {
@@ -111,7 +149,8 @@ class _HomeScreenState extends State<HomeScreen> {
         if (mounted && active != null) {
           setState(() {
             _latest = active;
-            _message = '$resolved queued SOS request${resolved == 1 ? '' : 's'} reconciled. Emergency session is active.';
+            _lastServerSync = active.updatedAt.toLocal();
+            _message = '$resolved queued SOS request${resolved == 1 ? '' : 's'} reached the server.';
           });
           await _startLiveTracking(active.id);
         }
@@ -120,48 +159,100 @@ class _HomeScreenState extends State<HomeScreen> {
     await _refreshQueue();
   }
 
+  double? _safeSpeed(Position p) => p.speed.isFinite && p.speed >= 0 ? p.speed : null;
+  double? _safeHeading(Position p) => p.heading.isFinite && p.heading >= 0 && p.heading < 360 ? p.heading : null;
+
   Future<void> _startLiveTracking(String alertId) async {
     if (_liveLocationSubscription != null) return;
     try {
+      final always = await _location.hasAlwaysPermission();
       final stream = await _location.liveStream();
+      if (mounted) setState(() => _backgroundAlways = always);
       _liveLocationSubscription = stream.listen((position) async {
+        _lastPosition = position;
+        _lastPhoneFix = DateTime.now();
+        if (mounted) setState(() {});
         if (_sendingLiveUpdate) return;
         _sendingLiveUpdate = true;
         try {
           final snapshot = await _device.snapshot();
-          final updated = await widget.session.api.updateLocation(
-            alertId,
+          final point = QueuedLocationUpdate(
+            alertId: alertId,
             latitude: position.latitude,
             longitude: position.longitude,
             accuracyM: position.accuracy,
             batteryPercent: snapshot.batteryPercent,
             networkState: snapshot.networkState,
+            speedMps: _safeSpeed(position),
+            headingDeg: _safeHeading(position),
+            recordedLocallyAt: DateTime.now().toUtc(),
           );
+          await _locationSync.sendOrQueue(widget.session.api, point);
           if (mounted) {
             setState(() {
-              _latest = updated;
+              _lastServerSync = DateTime.now();
+              _syncError = null;
               _battery = snapshot.batteryPercent;
               _network = snapshot.networkState;
             });
           }
         } catch (_) {
-          // Do not stop an emergency because one live update failed. The next
-          // GPS sample retries naturally while the original SOS remains stored.
+          if (mounted) {
+            setState(() {
+              _syncError = 'Server sync interrupted. GPS points are being queued securely.';
+            });
+          }
         } finally {
           _sendingLiveUpdate = false;
+          await _refreshQueue();
         }
+      }, onError: (Object e) {
+        if (mounted) setState(() => _syncError = 'GPS stream error: ${_cleanError(e)}');
       });
     } catch (e) {
       if (mounted) setState(() => _message = '${_cleanError(e)} The SOS itself remains active.');
     }
   }
 
+  Future<void> _flushLocationQueue(String alertId) async {
+    try {
+      final synced = await _locationSync.flush(widget.session.api, alertId);
+      if (synced > 0 && mounted) {
+        setState(() {
+          _lastServerSync = DateTime.now();
+          _syncError = null;
+        });
+      }
+    } catch (_) {}
+    await _refreshQueue();
+  }
+
   Future<void> _stopLiveTracking() async {
     await _liveLocationSubscription?.cancel();
     _liveLocationSubscription = null;
+    await _locationSync.store.clear();
   }
 
   String _cleanError(Object e) => e.toString().replaceFirst('Bad state: ', '');
+
+  String _emergencySms(QueuedAlert payload) {
+    final user = widget.session.user?.name ?? 'A ViraNari user';
+    final localTime = DateFormat('dd MMM yyyy, h:mm:ss a').format(DateTime.now());
+    final map = 'https://maps.google.com/?q=${payload.latitude},${payload.longitude}';
+    return 'VIRANARI SOS\n$user may be in danger.\nLocation: ${payload.latitude.toStringAsFixed(6)}, ${payload.longitude.toStringAsFixed(6)}\n$map\nTime: $localTime\nBattery: ${payload.batteryPercent ?? 'unknown'}%\nPlease call/check on them and contact local emergency help if needed.';
+  }
+
+  Future<String> _trySmsFallback(QueuedAlert payload) async {
+    if (_testMode) return 'Practice mode: SMS fallback intentionally skipped.';
+    if (!_smsReady) return 'SMS fallback was not prepared in advance.';
+    final phones = await _phoneStore.load();
+    if (phones.isEmpty) return 'No accepted Trusted Circle phone numbers are cached.';
+    final result = await _sms.send(recipients: phones, message: _emergencySms(payload));
+    if (result.dispatchedCount > 0) {
+      return 'SMS fallback dispatched to ${result.dispatchedCount} trusted contact${result.dispatchedCount == 1 ? '' : 's'}.';
+    }
+    return result.message;
+  }
 
   Future<void> _sendSos() async {
     if (_busy || _latest?.isActive == true) return;
@@ -182,6 +273,8 @@ class _HomeScreenState extends State<HomeScreen> {
         accuracyM: position.accuracy,
         batteryPercent: snapshot.batteryPercent,
         networkState: snapshot.networkState,
+        speedMps: _safeSpeed(position),
+        headingDeg: _safeHeading(position),
         isTest: _testMode,
         note: _testMode ? 'ViraNari TEST DRILL — no real emergency' : 'Emergency SOS from ViraNari mobile app',
       );
@@ -191,27 +284,31 @@ class _HomeScreenState extends State<HomeScreen> {
       if (mounted) {
         setState(() {
           _latest = alert;
+          _lastPhoneFix = DateTime.now();
+          _lastServerSync = DateTime.now();
           _battery = snapshot.batteryPercent;
           _network = snapshot.networkState;
           _message = alert.isTest
-              ? 'Test drill is active. Trusted contacts will see a TEST label.'
+              ? 'Test drill active. Trusted contacts see a TEST label.'
               : alert.recipients.isEmpty
-                  ? 'SOS is active, but no trusted contacts are connected. Keep moving toward a safer public place if you can.'
-                  : 'SOS is active. ${alert.recipients.length} trusted contact${alert.recipients.length == 1 ? '' : 's'} notified on the ViraNari server.';
+                  ? 'SOS active, but no ViraNari recipients are connected. Move toward a staffed/public place if you safely can.'
+                  : 'SOS active. ${alert.recipients.length} trusted contact${alert.recipients.length == 1 ? '' : 's'} notified.';
         });
       }
       await _startLiveTracking(alert.id);
     } on ApiException catch (e) {
       if (payload != null) {
         await _queue.enqueue(payload);
-        if (mounted) setState(() => _message = '${e.message}. SOS saved to the encrypted retry queue.');
+        final sms = await _trySmsFallback(payload);
+        if (mounted) setState(() => _message = '${e.message}. SOS queued locally. $sms');
       } else if (mounted) {
         setState(() => _message = e.message);
       }
     } catch (e) {
       if (payload != null) {
         await _queue.enqueue(payload);
-        if (mounted) setState(() => _message = 'Network unavailable. SOS saved locally for safe retry.');
+        final sms = await _trySmsFallback(payload);
+        if (mounted) setState(() => _message = 'Internet/server unavailable. SOS queued locally. $sms');
       } else if (mounted) {
         setState(() => _message = _cleanError(e));
       }
@@ -223,30 +320,23 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _refreshLatest({bool silent = false}) async {
-    if (_latest == null) {
-      await _retryPending();
-      return;
-    }
+    if (_latest == null) return;
     try {
       final refreshed = await widget.session.api.getAlert(_latest!.id);
       if (!mounted) return;
       setState(() {
         _latest = refreshed;
+        _lastServerSync = refreshed.updatedAt.toLocal();
         if (!silent) {
           _message = refreshed.deliveryState == 'Acknowledged'
               ? '${refreshed.acknowledgedCount} trusted contact${refreshed.acknowledgedCount == 1 ? '' : 's'} acknowledged your SOS.'
               : refreshed.deliveryState == 'Delivered'
                   ? 'SOS delivered to ${refreshed.deliveredCount} trusted contact${refreshed.deliveredCount == 1 ? '' : 's'}. Waiting for acknowledgement.'
-                  : refreshed.state == 'resolved'
-                      ? 'Emergency session ended and saved to history.'
-                      : refreshed.state == 'cancelled'
-                          ? 'False alarm cancelled. The record remains in history.'
-                          : _message;
+                  : _message;
         }
       });
       if (!refreshed.isActive) await _stopLiveTracking();
     } catch (_) {}
-    await _retryPending();
   }
 
   Future<void> _resolveSafe() async {
@@ -256,7 +346,7 @@ class _HomeScreenState extends State<HomeScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('End emergency session?'),
-        content: const Text('Use this only when you are safe. Your trusted contacts will see that the emergency ended.'),
+        content: const Text('Use this only when you are safe. Trusted contacts will see that the emergency ended.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Keep active')),
           FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text("I'm safe — end")),
@@ -268,7 +358,7 @@ class _HomeScreenState extends State<HomeScreen> {
     await _stopLiveTracking();
     if (mounted) setState(() {
       _latest = updated;
-      _message = 'Emergency ended. Your session remains in SOS history.';
+      _message = 'Emergency ended. The session remains in history.';
     });
   }
 
@@ -279,10 +369,10 @@ class _HomeScreenState extends State<HomeScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Cancel as false alarm?'),
-        content: const Text('Only cancel if this was accidental. If you may still be unsafe, keep the emergency active.'),
+        content: const Text('Only cancel if this was accidental. If you may still be unsafe, keep the SOS active.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Keep SOS active')),
-          TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Cancel false alarm')),
+          TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('False alarm — cancel')),
         ],
       ),
     );
@@ -291,16 +381,33 @@ class _HomeScreenState extends State<HomeScreen> {
     await _stopLiveTracking();
     if (mounted) setState(() {
       _latest = updated;
-      _message = 'False alarm cancelled. Trusted contacts can see the cancellation state.';
+      _message = 'False alarm cancelled. The record remains in history.';
     });
   }
 
+  Future<void> _configureSms(bool enabled) async {
+    if (!enabled) {
+      await _settings.setSmsFallbackEnabled(false);
+      if (mounted) setState(() => _smsReady = false);
+      return;
+    }
+    final ready = await _sms.prepare();
+    await _settings.setSmsFallbackEnabled(ready);
+    if (mounted) {
+      setState(() => _smsReady = ready);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(ready ? 'SMS fallback is prepared for emergencies.' : 'SMS permission was not granted.'),
+      ));
+    }
+  }
+
+  String _fmt(DateTime? time) => time == null ? 'waiting' : DateFormat('h:mm:ss a').format(time.toLocal());
+
   @override
   Widget build(BuildContext context) {
-    final state = _latest?.deliveryState;
     final active = _latest?.isActive == true;
-    final batteryText = _battery == null ? 'Battery ?' : 'Battery $_battery%';
-
+    final latest = _latest;
+    final lowBattery = (_battery ?? 100) <= 20;
     return RefreshIndicator(
       onRefresh: () async {
         await _refreshDeviceStatus();
@@ -308,204 +415,123 @@ class _HomeScreenState extends State<HomeScreen> {
         await _refreshLatest();
       },
       child: ListView(
-        padding: const EdgeInsets.fromLTRB(20, 18, 20, 110),
+        padding: const EdgeInsets.fromLTRB(20, 14, 20, 110),
         children: [
-          Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('Hi ${widget.session.user?.name ?? ''}', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900, color: ViraColors.plum)),
-                    const SizedBox(height: 4),
-                    Text(active ? 'Emergency response mode' : 'Ready when seconds matter', style: const TextStyle(color: ViraColors.mutedPlum)),
-                  ],
-                ),
-              ),
-              IconButton.filledTonal(onPressed: () => _refreshLatest(), icon: const Icon(Icons.sync_rounded), tooltip: 'Refresh emergency status'),
-            ],
-          ),
+          Row(children: [
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('Live Safety', style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w900, color: ViraColors.plum)),
+              const Text('One action. Multiple ways to keep help connected.', style: TextStyle(color: ViraColors.mutedPlum)),
+            ])),
+            Switch(value: _testMode, onChanged: active ? null : (v) => setState(() => _testMode = v)),
+            const Text('Test'),
+          ]),
+          const SizedBox(height: 14),
+          Wrap(spacing: 8, runSpacing: 8, children: [
+            StatusChip(label: _backendOnline ? 'Server online' : 'Server offline', icon: Icons.cloud_outlined, good: _backendOnline),
+            StatusChip(label: _network.toUpperCase(), icon: Icons.signal_cellular_alt, good: _network != 'offline'),
+            StatusChip(label: '${_battery ?? '--'}% battery', icon: Icons.battery_5_bar, good: !lowBattery),
+            StatusChip(label: '$_trustedCount trusted', icon: Icons.group_outlined, good: _trustedCount > 0),
+            StatusChip(label: _smsReady ? 'SMS ready' : 'SMS not ready', icon: Icons.sms_outlined, good: _smsReady),
+          ]),
           const SizedBox(height: 18),
+          Center(child: SosButton(onPressed: active ? null : _sendSos, busy: _busy, label: _testMode ? 'HOLD TEST SOS' : null)),
+          const SizedBox(height: 14),
+          Text(active ? 'SOS ACTIVE — location sharing continues' : 'Press and hold. No typing required.', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.w800, color: ViraColors.plum)),
+          const SizedBox(height: 14),
           Container(
             padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: active ? ViraColors.dangerSoft : ViraColors.lilac,
-              borderRadius: BorderRadius.circular(24),
-              border: Border.all(color: active ? ViraColors.pinkDark.withValues(alpha: .35) : ViraColors.lilacStrong),
-            ),
-            child: Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                StatusChip(label: _backendOnline ? 'Server reachable' : 'Server offline', icon: _backendOnline ? Icons.cloud_done_outlined : Icons.cloud_off_outlined, good: _backendOnline),
-                StatusChip(label: _network.toUpperCase(), icon: _network == 'offline' ? Icons.signal_wifi_off : Icons.network_check, good: _network != 'offline' && _network != 'unknown'),
-                StatusChip(label: batteryText, icon: Icons.battery_5_bar, good: (_battery ?? 100) > 20),
-                StatusChip(label: '$_trustedCount trusted', icon: Icons.group_outlined, good: _trustedCount > 0),
-                StatusChip(label: _pending == 0 ? 'Queue clear' : '$_pending queued', icon: _pending == 0 ? Icons.cloud_done_outlined : Icons.cloud_off_outlined, good: _pending == 0),
-              ],
-            ),
+            decoration: BoxDecoration(color: active ? ViraColors.dangerSoft : ViraColors.surface, borderRadius: BorderRadius.circular(22)),
+            child: Text(_message, style: const TextStyle(height: 1.4, fontWeight: FontWeight.w700)),
           ),
-          const SizedBox(height: 28),
-          if (active) _ActiveEmergencyBanner(alert: _latest!),
-          if (active) const SizedBox(height: 18),
-          if (!active) ...[
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              decoration: BoxDecoration(color: _testMode ? ViraColors.lilac : Colors.white, borderRadius: BorderRadius.circular(18), border: Border.all(color: ViraColors.lilacStrong)),
-              child: Row(
-                children: [
-                  const Icon(Icons.science_outlined, color: ViraColors.plum),
-                  const SizedBox(width: 10),
-                  const Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text('Practice mode', style: TextStyle(fontWeight: FontWeight.w900)), Text('Send a clearly labelled test alert to verify your setup.', style: TextStyle(color: ViraColors.mutedPlum, fontSize: 12))])),
-                  Switch(value: _testMode, onChanged: (value) => setState(() => _testMode = value)),
-                ],
-              ),
-            ),
-            const SizedBox(height: 18),
-          ],
-          Center(child: SosButton(onPressed: (_busy || active) ? null : _sendSos, busy: _busy, label: _testMode ? 'HOLD TO TEST' : 'HOLD FOR HELP')), 
-          const SizedBox(height: 12),
-          Center(
-            child: Text(
-              active ? 'SOS already active — live location is being shared' : 'Press and hold. No typing required.',
-              style: const TextStyle(color: ViraColors.mutedPlum, fontWeight: FontWeight.w700),
-              textAlign: TextAlign.center,
-            ),
-          ),
-          if ((_battery ?? 100) <= 20) ...[
-            const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(color: const Color(0xFFFFF1D9), borderRadius: BorderRadius.circular(18)),
-              child: const Row(children: [Icon(Icons.battery_alert_rounded, color: ViraColors.warning), SizedBox(width: 10), Expanded(child: Text('Low battery: keep the emergency active, reduce nonessential screen use, and move toward a safe public place if possible.', style: TextStyle(fontWeight: FontWeight.w700)))]),
-            ),
-          ],
-          const SizedBox(height: 24),
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 250),
-            padding: const EdgeInsets.all(18),
-            decoration: BoxDecoration(
-              color: state == 'Acknowledged' ? ViraColors.successSoft : Colors.white,
-              borderRadius: BorderRadius.circular(22),
-              border: Border.all(color: state == 'Acknowledged' ? ViraColors.success : ViraColors.lilacStrong),
-            ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Icon(state == 'Acknowledged' ? Icons.check_circle : active ? Icons.crisis_alert : Icons.info_outline, color: state == 'Acknowledged' ? ViraColors.success : active ? ViraColors.pinkDark : ViraColors.plum),
-                const SizedBox(width: 12),
-                Expanded(child: Text(_message, style: const TextStyle(height: 1.35, fontWeight: FontWeight.w600))),
-              ],
-            ),
-          ),
-          if (_latest != null) ...[
-            const SizedBox(height: 16),
-            _LatestAlertCard(alert: _latest!),
-          ],
-          if (active) ...[
-            const SizedBox(height: 14),
-            FilledButton.icon(onPressed: _resolveSafe, icon: const Icon(Icons.health_and_safety_outlined), label: const Text("I'm safe — end emergency")),
-            const SizedBox(height: 6),
-            TextButton(onPressed: _cancelFalseAlarm, child: const Text('Accidental trigger? Cancel false alarm')),
-          ],
-          const SizedBox(height: 18),
-          const Text(
-            'ViraNari distinguishes SENT, DELIVERED and ACKNOWLEDGED. During an active session it keeps updating the latest location instead of assuming the first GPS point is enough.',
-            style: TextStyle(color: ViraColors.mutedPlum, height: 1.45),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _ActiveEmergencyBanner extends StatelessWidget {
-  const _ActiveEmergencyBanner({required this.alert});
-  final AlertRecord alert;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: ViraColors.midnight,
-        borderRadius: BorderRadius.circular(26),
-        boxShadow: [BoxShadow(color: ViraColors.midnight.withValues(alpha: .18), blurRadius: 28, offset: const Offset(0, 12))],
-      ),
-      child: Row(
-        children: [
+          const SizedBox(height: 14),
           Container(
-            width: 50,
-            height: 50,
-            decoration: const BoxDecoration(color: ViraColors.pink, shape: BoxShape.circle),
-            child: const Icon(Icons.sensors_rounded, color: Colors.white),
-          ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(alert.isTest ? 'TEST DRILL ACTIVE' : 'EMERGENCY ACTIVE', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, letterSpacing: 1)),
-                const SizedBox(height: 4),
-                Text('Live update ${DateFormat('h:mm:ss a').format(alert.updatedAt.toLocal())}', style: const TextStyle(color: Color(0xFFD4E5E4))),
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(22)),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Row(children: [Icon(Icons.my_location, color: ViraColors.plum), SizedBox(width: 8), Text('Find-My-style tracking', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w900))]),
+              const SizedBox(height: 12),
+              _MetricRow(label: 'Phone GPS fix', value: _fmt(_lastPhoneFix), good: _lastPhoneFix != null),
+              _MetricRow(label: 'Server synced', value: _fmt(_lastServerSync), good: _lastServerSync != null && _syncError == null),
+              _MetricRow(label: 'Queued GPS points', value: '$_queuedLocations', good: _queuedLocations == 0),
+              if (_lastPosition != null) _MetricRow(label: 'Accuracy', value: '±${_lastPosition!.accuracy.toStringAsFixed(0)} m', good: _lastPosition!.accuracy < 30),
+              if (_syncError != null) ...[
+                const SizedBox(height: 8),
+                Text(_syncError!, style: const TextStyle(color: ViraColors.pinkDark, fontWeight: FontWeight.w800)),
               ],
-            ),
+              if (active && !_backgroundAlways) ...[
+                const SizedBox(height: 10),
+                Row(children: [
+                  const Expanded(child: Text('Background permission may be limited. Tracking is strongest when “Allow all the time” is enabled.', style: TextStyle(color: ViraColors.warning))),
+                  TextButton(onPressed: _location.openAppSettings, child: const Text('Settings')),
+                ]),
+              ],
+            ]),
           ),
-          const Icon(Icons.location_searching, color: ViraColors.gold),
+          const SizedBox(height: 14),
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(color: ViraColors.successSoft, borderRadius: BorderRadius.circular(22)),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Row(children: [Icon(Icons.sms_outlined, color: ViraColors.success), SizedBox(width: 8), Text('SMS survival fallback', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w900))]),
+              const SizedBox(height: 6),
+              Text('$_trustedSmsCount cached trusted phone number${_trustedSmsCount == 1 ? '' : 's'}. SMS is used only if the API cannot be reached.', style: const TextStyle(color: ViraColors.mutedPlum)),
+              const SizedBox(height: 8),
+              SwitchListTile.adaptive(
+                contentPadding: EdgeInsets.zero,
+                value: _smsReady,
+                onChanged: active ? null : _configureSms,
+                title: const Text('Prepare SMS fallback before danger', style: TextStyle(fontWeight: FontWeight.w800)),
+                subtitle: const Text('Android can dispatch directly after permission. iPhone opens the Messages composer for user approval.'),
+              ),
+            ]),
+          ),
+          if (_pending > 0) ...[
+            const SizedBox(height: 12),
+            Text('$_pending SOS request${_pending == 1 ? '' : 's'} waiting for server reconciliation.', style: const TextStyle(color: ViraColors.warning, fontWeight: FontWeight.w800)),
+          ],
+          if (latest != null) ...[
+            const SizedBox(height: 14),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(color: ViraColors.lilac, borderRadius: BorderRadius.circular(22)),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Row(children: [
+                  Expanded(child: Text('Emergency ${latest.state.toUpperCase()}', style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w900))),
+                  Text(latest.deliveryState, style: const TextStyle(fontWeight: FontWeight.w900, color: ViraColors.plum)),
+                ]),
+                const SizedBox(height: 6),
+                Text('${latest.acknowledgedCount}/${latest.recipients.length} acknowledged · ${latest.deliveredCount}/${latest.recipients.length} delivered'),
+                const SizedBox(height: 10),
+                if (active) Row(children: [
+                  Expanded(child: FilledButton.tonal(onPressed: _resolveSafe, child: const Text("I'm safe"))),
+                  const SizedBox(width: 8),
+                  Expanded(child: TextButton(onPressed: _cancelFalseAlarm, child: const Text('False alarm'))),
+                ]),
+              ]),
+            ),
+          ],
         ],
       ),
     );
   }
 }
 
-class _LatestAlertCard extends StatelessWidget {
-  const _LatestAlertCard({required this.alert});
-  final AlertRecord alert;
+class _MetricRow extends StatelessWidget {
+  const _MetricRow({required this.label, required this.value, required this.good});
+  final String label;
+  final String value;
+  final bool good;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(22)),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Expanded(child: Text('Latest SOS', style: TextStyle(fontWeight: FontWeight.w900, color: ViraColors.plum, fontSize: 17))),
-              if (alert.isTest) const Padding(padding: EdgeInsets.only(right: 8), child: Text('TEST', style: TextStyle(color: ViraColors.gold, fontWeight: FontWeight.w900, fontSize: 11))),
-              Text(alert.state.toUpperCase(), style: TextStyle(fontWeight: FontWeight.w900, fontSize: 11, color: alert.isActive ? ViraColors.pinkDark : ViraColors.mutedPlum)),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text('${alert.latitude.toStringAsFixed(5)}, ${alert.longitude.toStringAsFixed(5)}', style: const TextStyle(color: ViraColors.mutedPlum)),
-          const SizedBox(height: 4),
-          Wrap(
-            spacing: 12,
-            children: [
-              if (alert.batteryPercent != null) Text('Battery ${alert.batteryPercent}%', style: const TextStyle(color: ViraColors.mutedPlum)),
-              if (alert.networkState != null) Text(alert.networkState!.toUpperCase(), style: const TextStyle(color: ViraColors.mutedPlum)),
-            ],
-          ),
-          const SizedBox(height: 12),
-          if (alert.recipients.isEmpty)
-            const Text('No active trusted contacts.', style: TextStyle(fontWeight: FontWeight.w700))
-          else
-            ...alert.recipients.map(
-              (r) => Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Row(
-                  children: [
-                    Icon(r.acknowledgedAt != null ? Icons.check_circle : r.deliveredAt != null ? Icons.mark_email_read_outlined : Icons.schedule_send_outlined, size: 20, color: r.acknowledgedAt != null ? ViraColors.success : ViraColors.plum),
-                    const SizedBox(width: 8),
-                    Expanded(child: Text(r.name, style: const TextStyle(fontWeight: FontWeight.w700))),
-                    Text(r.acknowledgedAt != null ? 'ACKNOWLEDGED' : r.deliveredAt != null ? 'DELIVERED' : 'SENT', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w900, color: r.acknowledgedAt != null ? ViraColors.success : ViraColors.mutedPlum)),
-                  ],
-                ),
-              ),
-            ),
-        ],
-      ),
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(children: [
+        Icon(good ? Icons.check_circle : Icons.schedule, size: 17, color: good ? ViraColors.success : ViraColors.warning),
+        const SizedBox(width: 7),
+        Expanded(child: Text(label)),
+        Text(value, style: const TextStyle(fontWeight: FontWeight.w800)),
+      ]),
     );
   }
 }
