@@ -23,7 +23,7 @@ python3 "$ROOT/scripts/patch_mobile.py"; or exit 1
 flutter pub get; or exit 1
 
 echo
-echo "ViraNari v1.8.3 mobile wrapper is ready."
+echo "ViraNari v1.8.5 mobile wrapper is ready."
 echo "Android emulator local-backend URL defaults to http://10.0.2.2:3000"
 echo "Local: flutter run --dart-define=VIRANARI_API_BASE=http://10.0.2.2:3000"
 echo "VPS:   flutter run --dart-define=VIRANARI_API_BASE=https://YOUR-API-DOMAIN"

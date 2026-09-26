@@ -1,45 +1,21 @@
-# ViraNari V1.8.4 — Emergency Active Live Coordination
+# ViraNari V1.8.5 — Clean Emergency Active
 
-V1.8.4 keeps the rich V1.8.3 Safety Map and restores the large **Emergency ACTIVE** card on Home so the victim can immediately see emergency state, acknowledgement, both users, live movement trails, distance and ETA without opening another screen.
+V1.8.5 keeps the V1.8.4 emergency coordination system but cleans the Home UI and makes proximity between the victim and acknowledged responder easier to understand.
 
-## Emergency ACTIVE card
-During an active SOS, Home now shows:
-- `Emergency ACTIVE` plus Sent/Delivered/Acknowledged state;
-- acknowledged/delivered counts;
-- embedded map;
-- victim marker and latest victim trail;
-- nearest acknowledged responder marker and responder breadcrumb trail;
-- live distance and approximate ETA;
-- victim and responder GPS coordinates plus responder update time;
-- recenter control;
-- `I'm safe` and `False alarm` actions.
+## Main changes
 
-Responder movement uses stored GPS breadcrumbs. The card intentionally does not invent a straight road route between users.
+- Cleaner Emergency ACTIVE card.
+- One live separation line on the Home emergency map instead of multiple overlapping trails.
+- Fresh client-side GPS distance using the latest victim/responder coordinates.
+- Combined GPS accuracy shown beside the live separation measurement.
+- Nearby alert at <=100 m for both victim and responder.
+- Android notification-bar proximity alert with 150 m reset hysteresis.
+- Cleaner compact Home GPS/status card.
 
-## Existing core retained
-- Silent logo-hold SOS;
-- continuous emergency GPS and independent heartbeat;
-- offline GPS queue and reconnect replay;
-- Live Track + live GPS updates feed;
-- rich Safety Map and Safety Compass;
-- Trusted Circle, Inbox, History and acknowledgement;
-- Android notification-bar SOS alert and in-app emergency alert.
+The dedicated Live Track screen still retains the full victim/responder breadcrumb history and live GPS updates timeline.
 
-## Validate
+## Validation
 
-```fish
-cd mobile
-flutter clean
-flutter pub get
-flutter analyze
-flutter build apk --release
-```
+Backend tests: `37 passed`.
 
-Backend:
-
-```bash
-cd backend
-python -m pytest -q
-```
-
-Expected backend tests: `37 passed`.
+Flutter is not installed in the packaging environment, so run `flutter analyze` locally before building the APK.

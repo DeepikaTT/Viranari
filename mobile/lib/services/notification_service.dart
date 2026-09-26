@@ -43,6 +43,28 @@ class NotificationService {
     }
   }
 
+
+  Future<void> showNearbyEmergency({
+    required String alertId,
+    required String personName,
+    required int distanceM,
+    required bool forVictim,
+  }) async {
+    if (!_android) return;
+    try {
+      await _channel.invokeMethod<void>('showNearbyEmergencyNotification', {
+        'alertId': alertId,
+        'personName': personName,
+        'distanceM': distanceM,
+        'forVictim': forVictim,
+      });
+    } on MissingPluginException {
+      // The in-app nearby banner still works if the native bridge is unavailable.
+    } on PlatformException {
+      // Proximity notification is supplementary.
+    }
+  }
+
   Future<void> cancelIncomingSos(String alertId) async {
     if (!_android) return;
     try {

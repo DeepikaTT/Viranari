@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:intl/intl.dart';
@@ -12,6 +13,7 @@ import '../core/models.dart';
 import '../core/session.dart';
 import '../core/theme.dart';
 import '../services/location_service.dart';
+import '../services/notification_service.dart';
 
 class LiveTrackingScreen extends StatefulWidget {
   const LiveTrackingScreen({super.key, required this.session, required this.initial});
@@ -25,6 +27,7 @@ class LiveTrackingScreen extends StatefulWidget {
 class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBindingObserver {
   final MapController _mapController = MapController();
   final LocationService _location = LocationService();
+  final NotificationService _notifications = NotificationService();
   Timer? _timer;
   AlertRecord? _alert;
   List<AlertLocationPoint> _points = const [];
@@ -36,6 +39,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
   bool _follow = true;
   bool _sharingResponderLocation = false;
   bool _showGpsTimeline = true;
+  bool _nearbyNotified = false;
   String? _error;
 
   @override
@@ -90,6 +94,29 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
         }
       }
 
+      if (responder != null && myPosition != null && alert.isActive) {
+        final victim = points.isNotEmpty
+            ? points.last
+            : AlertLocationPoint(
+                latitude: alert.latitude,
+                longitude: alert.longitude,
+                recordedAt: alert.lastGpsFixAt ?? alert.updatedAt,
+                accuracyM: alert.accuracyM,
+                batteryPercent: alert.batteryPercent,
+                networkState: alert.networkState,
+              );
+        await _maybeNotifyNearby(
+          alertId: alert.id,
+          victimName: widget.initial.senderName,
+          distanceM: Geolocator.distanceBetween(
+            myPosition.latitude,
+            myPosition.longitude,
+            victim.latitude,
+            victim.longitude,
+          ),
+        );
+      }
+
       if (!mounted) return;
       setState(() {
         _alert = alert;
@@ -115,6 +142,26 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
     } finally {
       _refreshing = false;
     }
+  }
+
+  Future<void> _maybeNotifyNearby({
+    required String alertId,
+    required String victimName,
+    required double distanceM,
+  }) async {
+    if (distanceM > 150) {
+      _nearbyNotified = false;
+      return;
+    }
+    if (distanceM > 100 || _nearbyNotified) return;
+    _nearbyNotified = true;
+    await HapticFeedback.mediumImpact();
+    await _notifications.showNearbyEmergency(
+      alertId: alertId,
+      personName: victimName,
+      distanceM: distanceM.round(),
+      forVictim: false,
+    );
   }
 
   double? _safeSpeed(Position p) => p.speed.isFinite && p.speed >= 0 ? p.speed : null;

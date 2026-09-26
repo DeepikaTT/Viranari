@@ -1,18 +1,16 @@
-ViraNari v1.8.4 validation
+ViraNari v1.8.5 validation
 
-Backend: 37/37 pytest tests passed.
-Source assertions passed:
-- Emergency ACTIVE Home card present
-- embedded FlutterMap present
-- victim trail present
-- responder breadcrumb trail present
-- victim and responder markers present
-- live distance / approximate ETA present
-- V1.8.3 Safety Map source preserved
-- Android SOS notification source preserved
+Backend:
+  python -m pytest -q
+  37 passed
 
-Flutter SDK is not installed in the packaging environment. Run locally:
-  cd mobile
+Mobile source checks performed during packaging:
+  - V1.8.4 Home emergency trail layers replaced with one responder-victim connector on Home only.
+  - Android notification bridge includes incoming SOS + nearby emergency methods.
+  - No database migration introduced.
+
+Flutter SDK is not installed in the packaging environment.
+Required local check:
   flutter clean
   flutter pub get
   flutter analyze

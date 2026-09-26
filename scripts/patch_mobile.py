@@ -66,10 +66,19 @@ class MainActivity : FlutterActivity() {
                         showIncomingSos(alertId, senderName, silentMode, latitude, longitude)
                         result.success(null)
                     }
+                    "showNearbyEmergencyNotification" -> {
+                        val alertId = call.argument<String>("alertId") ?: "nearby"
+                        val personName = call.argument<String>("personName") ?: "Responder"
+                        val distanceM = call.argument<Int>("distanceM") ?: 0
+                        val forVictim = call.argument<Boolean>("forVictim") ?: false
+                        showNearbyEmergency(alertId, personName, distanceM, forVictim)
+                        result.success(null)
+                    }
                     "cancelIncomingSosNotification" -> {
                         val alertId = call.argument<String>("alertId") ?: "incoming"
                         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                         manager.cancel(notificationId(alertId))
+                        manager.cancel(nearbyNotificationId(alertId))
                         result.success(null)
                     }
                     else -> result.notImplemented()
@@ -162,7 +171,58 @@ class MainActivity : FlutterActivity() {
         manager.notify(notificationId(alertId), builder.build())
     }
 
+    private fun showNearbyEmergency(
+        alertId: String,
+        personName: String,
+        distanceM: Int,
+        forVictim: Boolean,
+    ) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) return
+
+        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+            ?: Intent(this, MainActivity::class.java)
+        launchIntent.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            nearbyNotificationId(alertId),
+            launchIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+        val title = if (forVictim) "Responder is nearby" else "You are close to the victim"
+        val body = if (forVictim) {
+            "$personName is about $distanceM m away. Keep the emergency active until you are together."
+        } else {
+            "You are about $distanceM m from the victim. Open ViraNari for the latest live GPS."
+        }
+
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, sosChannel)
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(this)
+        }
+
+        builder
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setStyle(Notification.BigTextStyle().bigText(body))
+            .setContentIntent(pendingIntent)
+            .setPriority(Notification.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .setVisibility(Notification.VISIBILITY_PUBLIC)
+            .setVibrate(longArrayOf(0, 220, 120, 220))
+
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.notify(nearbyNotificationId(alertId), builder.build())
+    }
+
     private fun notificationId(alertId: String): Int = 41000 + (alertId.hashCode() and 0x3fff)
+    private fun nearbyNotificationId(alertId: String): Int = 57000 + (alertId.hashCode() and 0x3fff)
 }
 ''')
 
@@ -191,4 +251,4 @@ if plist.exists():
         text = text.replace('</dict>', ''.join(additions) + '</dict>', 1)
         plist.write_text(text)
 
-print('Mobile platform files patched for ViraNari v1.8.3 Safety Map + SOS notifications.')
+print('Mobile platform files patched for ViraNari v1.8.5 clean Emergency Active + SOS/proximity notifications.')

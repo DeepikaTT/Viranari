@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
@@ -17,6 +18,7 @@ import '../core/theme.dart';
 import '../services/device_status_service.dart';
 import '../services/location_service.dart';
 import '../services/location_sync_service.dart';
+import '../services/notification_service.dart';
 import '../services/offline_queue.dart';
 import '../widgets/sos_button.dart';
 import '../widgets/status_chip.dart';
@@ -36,6 +38,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final _device = DeviceStatusService();
   final _queue = OfflineQueueService();
   final _locationSync = LocationSyncService();
+  final _notifications = NotificationService();
   final _connectivity = Connectivity();
   final MapController _emergencyMapController = MapController();
 
@@ -67,7 +70,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   AlertRecord? _latest;
   List<ResponderState> _responders = const [];
   List<AlertLocationPoint> _homeVictimTrail = const [];
-  List<ResponderTrailPoint> _homeResponderTrail = const [];
+  String? _nearbyVictimNotifiedAlertId;
 
   StreamSubscription<Position>? _liveLocationSubscription;
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
@@ -541,7 +544,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               headingDeg: _safeHeading(position),
             ),
           ];
-          _homeResponderTrail = const [];
           _lastPhoneFix = DateTime.now();
           _lastHeartbeatAt = alert.lastDeviceSeenAt?.toLocal() ?? DateTime.now();
           _lastServerSync = alert.lastLocationSyncAt?.toLocal() ?? DateTime.now();
@@ -588,18 +590,15 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         widget.session.api.getAlert(alertId),
         widget.session.api.responders(alertId),
         widget.session.api.locations(alertId),
-        widget.session.api.responderTrail(alertId),
       ]);
       final refreshed = results[0] as AlertRecord;
       final responders = results[1] as List<ResponderState>;
       final victimTrail = results[2] as List<AlertLocationPoint>;
-      final responderTrail = results[3] as List<ResponderTrailPoint>;
       if (!mounted) return;
       setState(() {
         _latest = refreshed;
         _responders = responders;
         _homeVictimTrail = victimTrail;
-        _homeResponderTrail = responderTrail;
         _lastHeartbeatAt = refreshed.lastDeviceSeenAt?.toLocal() ?? _lastHeartbeatAt;
         _lastPhoneFix = refreshed.lastGpsFixAt?.toLocal() ?? _lastPhoneFix;
         _lastServerSync = refreshed.lastLocationSyncAt?.toLocal() ?? _lastServerSync;
@@ -611,9 +610,68 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   : _message;
         }
       });
-      if (refreshed.isActive) _fitEmergencyMap();
-      if (!refreshed.isActive) await _stopLiveTracking();
+      if (refreshed.isActive) {
+        _fitEmergencyMap();
+        unawaited(_maybeNotifyVictimNearby(refreshed, responders));
+      } else {
+        _nearbyVictimNotifiedAlertId = null;
+        await _stopLiveTracking();
+      }
     } catch (_) {}
+  }
+
+  double _liveDistanceToResponder(AlertRecord latest, ResponderState responder) {
+    final victim = _victimMapPoint(latest);
+    return Geolocator.distanceBetween(
+      victim.latitude,
+      victim.longitude,
+      responder.latitude,
+      responder.longitude,
+    );
+  }
+
+  int _liveEtaSeconds(double distanceM, ResponderState responder) {
+    final measured = responder.speedMps;
+    final paceMps = measured != null && measured.isFinite && measured >= 0.8
+        ? measured
+        : 1.4;
+    final seconds = (distanceM / math.max(0.8, paceMps)).round();
+    return seconds < 0 ? 0 : seconds;
+  }
+
+  int _combinedGpsAccuracyM(AlertRecord latest, ResponderState responder) {
+    final victimAccuracy = _lastPosition?.accuracy ?? latest.accuracyM ?? 0;
+    final responderAccuracy = responder.accuracyM ?? 0;
+    return math.sqrt(
+      victimAccuracy * victimAccuracy + responderAccuracy * responderAccuracy,
+    ).round();
+  }
+
+  Future<void> _maybeNotifyVictimNearby(
+    AlertRecord latest,
+    List<ResponderState> responders,
+  ) async {
+    if (!latest.isActive || responders.isEmpty) return;
+    final nearest = [...responders]
+      ..sort((a, b) => _liveDistanceToResponder(latest, a)
+          .compareTo(_liveDistanceToResponder(latest, b)));
+    final responder = nearest.first;
+    final distanceM = _liveDistanceToResponder(latest, responder);
+    if (distanceM > 150) {
+      if (_nearbyVictimNotifiedAlertId == latest.id) {
+        _nearbyVictimNotifiedAlertId = null;
+      }
+      return;
+    }
+    if (distanceM > 100 || _nearbyVictimNotifiedAlertId == latest.id) return;
+    _nearbyVictimNotifiedAlertId = latest.id;
+    await HapticFeedback.mediumImpact();
+    await _notifications.showNearbyEmergency(
+      alertId: latest.id,
+      personName: responder.responderName,
+      distanceM: distanceM.round(),
+      forVictim: true,
+    );
   }
 
   String _responderDistance(int metres) => metres >= 1000
@@ -686,11 +744,197 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     });
   }
 
+  Widget _buildLiveLocationSummary(bool active) {
+    final latitude = _lastPosition?.latitude ?? _latest?.latitude;
+    final longitude = _lastPosition?.longitude ?? _latest?.longitude;
+    final accuracy = _lastPosition?.accuracy ?? _latest?.accuracyM;
+
+    Widget statusRow({
+      required IconData icon,
+      required String label,
+      required String value,
+      required bool good,
+    }) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3),
+        child: Row(
+          children: [
+            Container(
+              width: 28,
+              height: 28,
+              decoration: BoxDecoration(
+                color: (good ? ViraColors.success : ViraColors.warning)
+                    .withValues(alpha: .10),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                icon,
+                size: 17,
+                color: good ? ViraColors.success : ViraColors.warning,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                label,
+                style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 12),
+              ),
+            ),
+            Text(
+              value,
+              style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 12),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(15, 14, 15, 14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x0A000000),
+            blurRadius: 14,
+            offset: Offset(0, 5),
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                flex: 6,
+                child: Column(
+                  children: [
+                    statusRow(
+                      icon: Icons.cloud_done_rounded,
+                      label: 'Server location sync',
+                      value: _fmt(_lastServerSync),
+                      good: _lastServerSync != null && _syncError == null,
+                    ),
+                    statusRow(
+                      icon: Icons.route_rounded,
+                      label: 'Queued GPS points',
+                      value: '$_queuedLocations',
+                      good: _queuedLocations == 0,
+                    ),
+                    statusRow(
+                      icon: Icons.my_location_rounded,
+                      label: 'GPS accuracy',
+                      value: accuracy == null ? '—' : '±${accuracy.toStringAsFixed(0)} m',
+                      good: accuracy != null && accuracy < 30,
+                    ),
+                  ],
+                ),
+              ),
+              Container(
+                width: 1,
+                height: 112,
+                margin: const EdgeInsets.symmetric(horizontal: 12),
+                color: ViraColors.lilacStrong.withValues(alpha: .65),
+              ),
+              Expanded(
+                flex: 5,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.location_on_rounded, color: ViraColors.plum, size: 22),
+                        SizedBox(width: 5),
+                        Text(
+                          'Current GPS',
+                          style: TextStyle(fontWeight: FontWeight.w900, fontSize: 12),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 5),
+                    Text(
+                      latitude == null || longitude == null
+                          ? 'Waiting for GPS…'
+                          : '${latitude.toStringAsFixed(6)},\n${longitude.toStringAsFixed(6)}',
+                      style: const TextStyle(
+                        color: ViraColors.mutedPlum,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 11,
+                        height: 1.35,
+                      ),
+                    ),
+                    const SizedBox(height: 9),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: latitude == null || longitude == null ? null : _openCurrentMap,
+                        icon: const Icon(Icons.map_outlined, size: 18),
+                        label: const Text('Open map'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          if (_syncError != null) ...[
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                _syncError!,
+                style: const TextStyle(
+                  color: ViraColors.pinkDark,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 11,
+                ),
+              ),
+            ),
+          ],
+          if (active && !_backgroundAlways) ...[
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
+              decoration: BoxDecoration(
+                color: const Color(0xFFEAF7F6),
+                borderRadius: BorderRadius.circular(15),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.info_outline_rounded, color: ViraColors.plum, size: 19),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'For strongest background tracking, enable “Allow all the time” location permission.',
+                      style: TextStyle(
+                        color: ViraColors.mutedPlum,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: _location.openAppSettings,
+                    child: const Text('Settings'),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   Widget _buildEmergencyActiveCard(AlertRecord latest) {
     final active = latest.isActive;
     final responder = _primaryResponder;
     final victimPoint = _victimMapPoint(latest);
-    final responderPoint = responder == null ? null : LatLng(responder.latitude, responder.longitude);
+    final responderPoint = responder == null
+        ? null
+        : LatLng(responder.latitude, responder.longitude);
     final responderUpdated = responder?.updatedAt.toLocal();
 
     final mapCenter = responderPoint == null
@@ -707,53 +951,149 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             responderPoint.latitude,
             responderPoint.longitude,
           );
+    final liveDistanceM = mapDistance.round();
+    final liveEtaSeconds = responder == null
+        ? 0
+        : _liveEtaSeconds(mapDistance, responder);
+    final combinedAccuracy = responder == null
+        ? 0
+        : _combinedGpsAccuracyM(latest, responder);
+    final nearby = responder != null && mapDistance <= 100;
 
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(14, 14, 14, 16),
       decoration: BoxDecoration(
-        color: active ? ViraColors.dangerSoft : ViraColors.lilac,
-        borderRadius: BorderRadius.circular(24),
+        color: active ? const Color(0xFFFFE9EF) : ViraColors.lilac,
+        borderRadius: BorderRadius.circular(28),
         border: Border.all(
-          color: active ? ViraColors.pink.withValues(alpha: .20) : ViraColors.lilacStrong,
+          color: active
+              ? ViraColors.pink.withValues(alpha: .28)
+              : ViraColors.lilacStrong,
         ),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x0D000000),
+            blurRadius: 16,
+            offset: Offset(0, 6),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: ViraColors.pinkDark.withValues(alpha: .10),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  active ? Icons.emergency_share_rounded : Icons.shield_rounded,
+                  color: active ? ViraColors.pinkDark : ViraColors.plum,
+                  size: 27,
+                ),
+              ),
+              const SizedBox(width: 10),
               Expanded(
                 child: RichText(
                   text: TextSpan(
-                    style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: Colors.black87),
+                    style: const TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.w900,
+                      color: Colors.black87,
+                      height: 1,
+                    ),
                     children: [
                       const TextSpan(text: 'Emergency '),
                       TextSpan(
                         text: latest.state.toUpperCase(),
-                        style: TextStyle(color: active ? ViraColors.pinkDark : ViraColors.plum),
+                        style: TextStyle(
+                          color: active ? ViraColors.pinkDark : ViraColors.plum,
+                        ),
                       ),
                     ],
                   ),
                 ),
               ),
-              Text(
-                latest.deliveryState,
-                style: const TextStyle(fontWeight: FontWeight.w900, color: ViraColors.plum),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: latest.acknowledgedCount > 0
+                      ? const Color(0xFFCDEDEA)
+                      : Colors.white.withValues(alpha: .76),
+                  borderRadius: BorderRadius.circular(15),
+                ),
+                child: Text(
+                  latest.deliveryState,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w900,
+                    color: ViraColors.plum,
+                    fontSize: 12,
+                  ),
+                ),
               ),
             ],
           ),
-          const SizedBox(height: 5),
-          Text(
-            '${latest.acknowledgedCount}/${latest.recipients.length} acknowledged  ·  '
-            '${latest.deliveredCount}/${latest.recipients.length} delivered',
-            style: const TextStyle(fontWeight: FontWeight.w700),
+          const SizedBox(height: 8),
+          Padding(
+            padding: const EdgeInsets.only(left: 54),
+            child: Text(
+              '${latest.acknowledgedCount}/${latest.recipients.length} acknowledged   •   '
+              '${latest.deliveredCount}/${latest.recipients.length} delivered',
+              style: const TextStyle(
+                fontWeight: FontWeight.w800,
+                fontSize: 13,
+                color: Colors.black87,
+              ),
+            ),
           ),
           if (active) ...[
-            const SizedBox(height: 14),
+            if (nearby) ...[
+              const SizedBox(height: 13),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 11),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: .68),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: ViraColors.pink.withValues(alpha: .26)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.radar_rounded, color: ViraColors.pinkDark),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text.rich(
+                        TextSpan(
+                          style: const TextStyle(
+                            color: Colors.black87,
+                            fontWeight: FontWeight.w800,
+                            fontSize: 12,
+                          ),
+                          children: [
+                            const TextSpan(text: 'Nearby alert: '),
+                            TextSpan(
+                              text: '${responder!.responderName} is about '
+                                  '${_responderDistance(liveDistanceM)} away.',
+                              style: const TextStyle(color: ViraColors.pinkDark),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            const SizedBox(height: 13),
             ClipRRect(
-              borderRadius: BorderRadius.circular(20),
+              borderRadius: BorderRadius.circular(22),
               child: SizedBox(
-                height: 245,
+                height: 270,
                 child: Stack(
                   children: [
                     Positioned.fill(
@@ -761,33 +1101,21 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                         mapController: _emergencyMapController,
                         options: MapOptions(
                           initialCenter: mapCenter,
-                          initialZoom: responderPoint == null ? 15.8 : _emergencyZoom(mapDistance),
+                          initialZoom: responderPoint == null
+                              ? 15.8
+                              : _emergencyZoom(mapDistance),
                         ),
                         children: [
                           TileLayer(
                             urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                             userAgentPackageName: 'com.viranari.viranari_app',
                           ),
-                          if (_homeVictimTrail.length > 1)
+                          if (responderPoint != null)
                             PolylineLayer(
                               polylines: [
                                 Polyline(
-                                  points: _homeVictimTrail
-                                      .map((p) => LatLng(p.latitude, p.longitude))
-                                      .toList(growable: false),
-                                  strokeWidth: 4,
-                                  color: ViraColors.pinkDark,
-                                ),
-                              ],
-                            ),
-                          if (_homeResponderTrail.length > 1)
-                            PolylineLayer(
-                              polylines: [
-                                Polyline(
-                                  points: _homeResponderTrail
-                                      .map((p) => LatLng(p.latitude, p.longitude))
-                                      .toList(growable: false),
-                                  strokeWidth: 5,
+                                  points: [responderPoint, victimPoint],
+                                  strokeWidth: 6,
                                   color: const Color(0xFF2563EB),
                                 ),
                               ],
@@ -796,8 +1124,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                             markers: [
                               Marker(
                                 point: victimPoint,
-                                width: 92,
-                                height: 80,
+                                width: 98,
+                                height: 84,
                                 child: const _EmergencyMapMarker(
                                   label: 'Victim',
                                   icon: Icons.location_on_rounded,
@@ -807,10 +1135,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                               if (responderPoint != null)
                                 Marker(
                                   point: responderPoint,
-                                  width: 110,
-                                  height: 80,
+                                  width: 118,
+                                  height: 84,
                                   child: _EmergencyMapMarker(
-                                    label: responder?.responderName ?? 'Responder',
+                                    label: responder!.responderName,
                                     icon: Icons.directions_car_filled_rounded,
                                     color: const Color(0xFF2563EB),
                                   ),
@@ -818,7 +1146,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                             ],
                           ),
                           RichAttributionWidget(
-                            attributions: [TextSourceAttribution('OpenStreetMap contributors')],
+                            attributions: [
+                              TextSourceAttribution('OpenStreetMap contributors'),
+                            ],
                           ),
                         ],
                       ),
@@ -827,30 +1157,42 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                       top: 10,
                       right: 10,
                       child: Material(
-                        color: Colors.white.withValues(alpha: .94),
-                        borderRadius: BorderRadius.circular(14),
+                        color: Colors.white.withValues(alpha: .95),
+                        borderRadius: BorderRadius.circular(15),
                         elevation: 2,
                         child: IconButton(
                           tooltip: 'Fit victim and responder',
                           onPressed: _fitEmergencyMap,
-                          icon: const Icon(Icons.gps_fixed_rounded, color: ViraColors.plum),
+                          icon: const Icon(
+                            Icons.gps_fixed_rounded,
+                            color: ViraColors.plum,
+                          ),
                         ),
                       ),
                     ),
                     if (responder != null)
                       Positioned(
-                        top: 12,
                         left: 12,
+                        bottom: 12,
                         child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 8,
+                          ),
                           decoration: BoxDecoration(
                             color: const Color(0xFF2563EB),
-                            borderRadius: BorderRadius.circular(12),
-                            boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 6)],
+                            borderRadius: BorderRadius.circular(13),
+                            boxShadow: const [
+                              BoxShadow(color: Colors.black12, blurRadius: 8),
+                            ],
                           ),
                           child: Text(
-                            '${_responderDistance(responder.distanceM)} · ETA ${_responderEta(responder.etaSeconds)}',
-                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 12),
+                            '${_responderDistance(liveDistanceM)}  •  ETA ${_responderEta(liveEtaSeconds)}',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w900,
+                              fontSize: 12,
+                            ),
                           ),
                         ),
                       ),
@@ -858,12 +1200,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 ),
               ),
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: 11),
             Container(
-              padding: const EdgeInsets.all(12),
+              width: double.infinity,
+              padding: const EdgeInsets.fromLTRB(14, 13, 14, 13),
               decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: .82),
-                borderRadius: BorderRadius.circular(16),
+                color: Colors.white.withValues(alpha: .90),
+                borderRadius: BorderRadius.circular(19),
               ),
               child: responder == null
                   ? const Row(
@@ -883,52 +1226,109 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                       children: [
                         Row(
                           children: [
-                            const Icon(Icons.directions_car_filled_rounded, color: Color(0xFF2563EB)),
-                            const SizedBox(width: 8),
+                            Container(
+                              width: 38,
+                              height: 38,
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF2563EB).withValues(alpha: .10),
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(
+                                Icons.directions_car_filled_rounded,
+                                color: Color(0xFF2563EB),
+                                size: 21,
+                              ),
+                            ),
+                            const SizedBox(width: 10),
                             Expanded(
                               child: Text(
                                 '${responder.responderName} → Victim  •  '
-                                '${_responderDistance(responder.distanceM)} away  •  '
-                                'ETA ${_responderEta(responder.etaSeconds)}',
-                                style: const TextStyle(fontWeight: FontWeight.w900),
+                                '${_responderDistance(liveDistanceM)} away  •  '
+                                'ETA ${_responderEta(liveEtaSeconds)}',
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w900,
+                                  fontSize: 13,
+                                ),
                               ),
                             ),
                           ],
                         ),
-                        const SizedBox(height: 5),
+                        const SizedBox(height: 8),
                         Text(
-                          'Responder GPS: ${responder.latitude.toStringAsFixed(5)}, ${responder.longitude.toStringAsFixed(5)}',
-                          style: const TextStyle(fontSize: 11, color: ViraColors.mutedPlum),
+                          'Responder GPS: ${responder.latitude.toStringAsFixed(5)}, '
+                          '${responder.longitude.toStringAsFixed(5)}',
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: ViraColors.mutedPlum,
+                          ),
                         ),
                         Text(
-                          'Victim GPS: ${victimPoint.latitude.toStringAsFixed(5)}, ${victimPoint.longitude.toStringAsFixed(5)}'
-                          '${responderUpdated == null ? '' : '  ·  Updated ${DateFormat('h:mm:ss a').format(responderUpdated)}'}',
-                          style: const TextStyle(fontSize: 11, color: ViraColors.mutedPlum),
+                          'Victim GPS: ${victimPoint.latitude.toStringAsFixed(5)}, '
+                          '${victimPoint.longitude.toStringAsFixed(5)}',
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: ViraColors.mutedPlum,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'GPS separation ${_responderDistance(liveDistanceM)}'
+                          '${combinedAccuracy > 0 ? '  •  combined accuracy ±$combinedAccuracy m' : ''}'
+                          '${responderUpdated == null ? '' : '  •  updated ${DateFormat('h:mm:ss a').format(responderUpdated)}'}',
+                          style: const TextStyle(
+                            fontSize: 10,
+                            color: ViraColors.mutedPlum,
+                            fontWeight: FontWeight.w700,
+                          ),
                         ),
                         if (_responders.length > 1) ...[
-                          const SizedBox(height: 4),
+                          const SizedBox(height: 5),
                           Text(
                             '+${_responders.length - 1} more trusted responder${_responders.length == 2 ? '' : 's'} active',
-                            style: const TextStyle(fontSize: 11, color: ViraColors.gold, fontWeight: FontWeight.w800),
+                            style: const TextStyle(
+                              fontSize: 10,
+                              color: ViraColors.gold,
+                              fontWeight: FontWeight.w800,
+                            ),
                           ),
                         ],
                       ],
                     ),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 13),
             Row(
               children: [
                 Expanded(
-                  child: FilledButton.tonal(
-                    onPressed: _resolveSafe,
-                    child: const Text("I'm safe"),
+                  child: SizedBox(
+                    height: 52,
+                    child: FilledButton.icon(
+                      style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFFBFE7E5),
+                        foregroundColor: ViraColors.plum,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(18),
+                        ),
+                      ),
+                      onPressed: _resolveSafe,
+                      icon: const Icon(Icons.shield_rounded),
+                      label: const Text(
+                        "I'm safe",
+                        style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+                      ),
+                    ),
                   ),
                 ),
-                const SizedBox(width: 8),
+                const SizedBox(width: 10),
                 Expanded(
-                  child: TextButton(
-                    onPressed: _cancelFalseAlarm,
-                    child: const Text('False alarm'),
+                  child: SizedBox(
+                    height: 52,
+                    child: TextButton(
+                      onPressed: _cancelFalseAlarm,
+                      child: const Text(
+                        'False alarm',
+                        style: TextStyle(fontWeight: FontWeight.w900, fontSize: 15),
+                      ),
+                    ),
                   ),
                 ),
               ],
@@ -990,30 +1390,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   String _fmt(DateTime? time) => time == null ? 'waiting' : DateFormat('h:mm:ss a').format(time.toLocal());
-
-  String get _livenessLabel {
-    if (_latest?.isActive != true) return 'READY';
-    final seen = _latest?.lastDeviceSeenAt?.toLocal() ?? _lastHeartbeatAt;
-    if (seen == null) return _backendOnline ? 'CONNECTING' : 'OFFLINE';
-    final age = DateTime.now().difference(seen);
-    if (age.inSeconds < 20) return 'LIVE';
-    if (age.inSeconds < 60) return 'DELAYED';
-    return 'OFFLINE';
-  }
-
-  Color get _livenessColor {
-    switch (_livenessLabel) {
-      case 'LIVE':
-        return ViraColors.success;
-      case 'DELAYED':
-      case 'CONNECTING':
-        return ViraColors.warning;
-      case 'OFFLINE':
-        return ViraColors.pinkDark;
-      default:
-        return ViraColors.plum;
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -1136,76 +1512,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             ),
           ],
           const SizedBox(height: 14),
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(22)),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    const Icon(Icons.my_location, color: ViraColors.plum),
-                    const SizedBox(width: 8),
-                    const Expanded(
-                      child: Text(
-                        'Live location',
-                        style: TextStyle(fontSize: 17, fontWeight: FontWeight.w900),
-                      ),
-                    ),
-                    Text(
-                      _livenessLabel,
-                      style: TextStyle(
-                        fontWeight: FontWeight.w900,
-                        color: _livenessColor,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                _MetricRow(label: 'Device heartbeat', value: _fmt(_latest?.lastDeviceSeenAt ?? _lastHeartbeatAt), good: _livenessLabel == 'LIVE'),
-                _MetricRow(label: 'Phone GPS fix', value: _fmt(_lastPhoneFix), good: _lastPhoneFix != null),
-                _MetricRow(label: 'Server location sync', value: _fmt(_lastServerSync), good: _lastServerSync != null && _syncError == null),
-                _MetricRow(label: 'Queued GPS points', value: '$_queuedLocations', good: _queuedLocations == 0),
-                if (_lastPosition != null)
-                  _MetricRow(
-                    label: 'GPS accuracy',
-                    value: '±${_lastPosition!.accuracy.toStringAsFixed(0)} m',
-                    good: _lastPosition!.accuracy < 30,
-                  ),
-                if (_lastPosition != null || _latest != null) ...[
-                  const SizedBox(height: 8),
-                  SelectableText(
-                    'GPS: ${(_lastPosition?.latitude ?? _latest!.latitude).toStringAsFixed(6)}, ${(_lastPosition?.longitude ?? _latest!.longitude).toStringAsFixed(6)}',
-                    style: const TextStyle(fontWeight: FontWeight.w800, color: ViraColors.plum),
-                  ),
-                  const SizedBox(height: 8),
-                  OutlinedButton.icon(
-                    onPressed: _openCurrentMap,
-                    icon: const Icon(Icons.map_outlined),
-                    label: const Text('Open map'),
-                  ),
-                ],
-                if (_syncError != null) ...[
-                  const SizedBox(height: 8),
-                  Text(_syncError!, style: const TextStyle(color: ViraColors.pinkDark, fontWeight: FontWeight.w800)),
-                ],
-                if (active && !_backgroundAlways) ...[
-                  const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      const Expanded(
-                        child: Text(
-                          'For strongest background tracking, enable “Allow all the time” location permission.',
-                          style: TextStyle(color: ViraColors.warning),
-                        ),
-                      ),
-                      TextButton(onPressed: _location.openAppSettings, child: const Text('Settings')),
-                    ],
-                  ),
-                ],
-              ],
-            ),
-          ),
+          _buildLiveLocationSummary(active),
           if (_pending > 0) ...[
             const SizedBox(height: 12),
             Text(
@@ -1259,28 +1566,3 @@ class _EmergencyMapMarker extends StatelessWidget {
   }
 }
 
-class _MetricRow extends StatelessWidget {
-  const _MetricRow({required this.label, required this.value, required this.good});
-  final String label;
-  final String value;
-  final bool good;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        children: [
-          Icon(
-            good ? Icons.check_circle : Icons.schedule,
-            size: 17,
-            color: good ? ViraColors.success : ViraColors.warning,
-          ),
-          const SizedBox(width: 7),
-          Expanded(child: Text(label)),
-          Text(value, style: const TextStyle(fontWeight: FontWeight.w800)),
-        ],
-      ),
-    );
-  }
-}
