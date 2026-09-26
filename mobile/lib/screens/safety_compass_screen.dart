@@ -11,6 +11,7 @@ import '../core/session.dart';
 import '../core/storage.dart';
 import '../core/theme.dart';
 import '../services/location_service.dart';
+import '../services/safe_place_discovery_service.dart';
 
 class SafetyCompassScreen extends StatefulWidget {
   const SafetyCompassScreen({super.key, required this.session});
@@ -20,10 +21,13 @@ class SafetyCompassScreen extends StatefulWidget {
   State<SafetyCompassScreen> createState() => _SafetyCompassScreenState();
 }
 
+enum _NodeSource { verified, publicMap, cache }
+
 class _SafetyCompassScreenState extends State<SafetyCompassScreen>
     with WidgetsBindingObserver {
   final LocationService _location = LocationService();
   final SafeNodeCacheStore _cache = SafeNodeCacheStore();
+  final SafePlaceDiscoveryService _publicPlaces = SafePlaceDiscoveryService();
 
   StreamSubscription<CompassEvent>? _compassSubscription;
   Timer? _locationTimer;
@@ -32,8 +36,8 @@ class _SafetyCompassScreenState extends State<SafetyCompassScreen>
   SafeNodePoint? _selected;
   double? _heading;
   bool _loading = true;
-  bool _usingCachedNodes = false;
   String? _error;
+  _NodeSource _source = _NodeSource.verified;
 
   @override
   void initState() {
@@ -42,7 +46,7 @@ class _SafetyCompassScreenState extends State<SafetyCompassScreen>
     _listenCompass();
     _refresh();
     _locationTimer = Timer.periodic(
-      const Duration(seconds: 12),
+      const Duration(seconds: 15),
       (_) => unawaited(_refresh(silent: true)),
     );
   }
@@ -81,20 +85,54 @@ class _SafetyCompassScreenState extends State<SafetyCompassScreen>
         _error = null;
       });
     }
+
     try {
       final position = await _location.current();
-      List<SafeNodePoint> nodes;
-      var cached = false;
+      var nodes = <SafeNodePoint>[];
+      var source = _NodeSource.verified;
+      Object? backendError;
+      Object? publicError;
+
+      // 1) Prefer ViraNari operator-verified Safe Nodes.
       try {
         nodes = await widget.session.api.nearbySafeNodes(
           latitude: position.latitude,
           longitude: position.longitude,
           radiusM: 25000,
         );
-        if (nodes.isNotEmpty) await _cache.save(nodes);
-      } catch (_) {
-        nodes = await _cache.load();
-        cached = true;
+      } catch (e) {
+        backendError = e;
+      }
+
+      // 2) If none exist, automatically discover real public emergency places
+      // from OpenStreetMap. These are shown as PUBLIC, not VERIFIED.
+      if (nodes.isEmpty) {
+        try {
+          nodes = await _publicPlaces.discover(
+            latitude: position.latitude,
+            longitude: position.longitude,
+            radiusM: 15000,
+          );
+          if (nodes.isNotEmpty) source = _NodeSource.publicMap;
+        } catch (e) {
+          publicError = e;
+        }
+      }
+
+      // 3) Offline / service failure fallback: reuse whatever was cached from a
+      // previous successful lookup.
+      if (nodes.isEmpty) {
+        final cached = await _cache.load();
+        nodes = cached.where((node) {
+          final d = Geolocator.distanceBetween(
+            position.latitude,
+            position.longitude,
+            node.latitude,
+            node.longitude,
+          );
+          return d <= 25000;
+        }).toList();
+        if (nodes.isNotEmpty) source = _NodeSource.cache;
       }
 
       nodes = nodes.where((node) {
@@ -104,9 +142,13 @@ class _SafetyCompassScreenState extends State<SafetyCompassScreen>
           node.latitude,
           node.longitude,
         );
-        return node.verified && d <= 25000;
+        return d <= 25000;
       }).toList()
         ..sort((a, b) => _distanceTo(a, position).compareTo(_distanceTo(b, position)));
+
+      if (nodes.isNotEmpty) {
+        await _cache.save(nodes);
+      }
 
       final selectedId = _selected?.id;
       SafeNodePoint? selected;
@@ -121,9 +163,14 @@ class _SafetyCompassScreenState extends State<SafetyCompassScreen>
         _position = position;
         _nodes = nodes;
         _selected = selected;
-        _usingCachedNodes = cached;
+        _source = source;
         _loading = false;
-        _error = null;
+        _error = nodes.isEmpty
+            ? [
+                if (backendError != null) 'ViraNari directory: $backendError',
+                if (publicError != null) 'Public-place lookup: $publicError',
+              ].join('\n')
+            : null;
       });
     } catch (e) {
       if (!mounted) return;
@@ -161,7 +208,7 @@ class _SafetyCompassScreenState extends State<SafetyCompassScreen>
       case 'police':
         return 'Police';
       case 'hospital':
-        return 'Hospital';
+        return 'Hospital / clinic';
       case 'pharmacy':
         return 'Pharmacy';
       case 'campus_security':
@@ -173,7 +220,29 @@ class _SafetyCompassScreenState extends State<SafetyCompassScreen>
       case 'staffed_place':
         return 'Staffed safe place';
       default:
-        return 'Safe Node';
+        return 'Safety place';
+    }
+  }
+
+  String get _sourceLabel {
+    switch (_source) {
+      case _NodeSource.verified:
+        return 'ViraNari verified';
+      case _NodeSource.publicMap:
+        return 'Public place from OpenStreetMap · not ViraNari verified';
+      case _NodeSource.cache:
+        return 'Cached safety place · verify before relying on it';
+    }
+  }
+
+  Color get _sourceColor {
+    switch (_source) {
+      case _NodeSource.verified:
+        return ViraColors.success;
+      case _NodeSource.publicMap:
+        return ViraColors.warning;
+      case _NodeSource.cache:
+        return ViraColors.mutedPlum;
     }
   }
 
@@ -186,8 +255,20 @@ class _SafetyCompassScreenState extends State<SafetyCompassScreen>
 
   Future<void> _call(SafeNodePoint node) async {
     final phone = node.phoneE164;
-    if (phone == null) return;
-    await launchUrl(Uri(scheme: 'tel', path: phone), mode: LaunchMode.externalApplication);
+    if (phone == null || phone.trim().isEmpty) return;
+    await launchUrl(
+      Uri(scheme: 'tel', path: phone),
+      mode: LaunchMode.externalApplication,
+    );
+  }
+
+  Future<void> _openEmergencySearch() async {
+    final position = _position;
+    if (position == null) return;
+    final uri = Uri.parse(
+      'geo:${position.latitude},${position.longitude}?q=${Uri.encodeComponent('police hospital pharmacy near me')}',
+    );
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
   }
 
   @override
@@ -200,35 +281,33 @@ class _SafetyCompassScreenState extends State<SafetyCompassScreen>
         title: const Text('Safety Compass'),
         actions: [
           IconButton(
-            onPressed: () => _refresh(),
+            onPressed: _loading ? null : () => _refresh(),
             icon: const Icon(Icons.refresh),
-            tooltip: 'Refresh GPS and Safe Nodes',
+            tooltip: 'Refresh GPS and safety places',
           ),
         ],
       ),
       body: _loading && position == null
           ? const Center(child: CircularProgressIndicator())
-          : _error != null && position == null
-              ? Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Text(_error!, textAlign: TextAlign.center),
-                  ),
+          : target == null || position == null
+              ? _EmptyCompass(
+                  error: _error,
+                  onRefresh: () => _refresh(),
+                  onOpenSearch: position == null ? null : _openEmergencySearch,
                 )
-              : target == null || position == null
-                  ? _EmptyCompass(usingCache: _usingCachedNodes)
-                  : _CompassBody(
-                      node: target,
-                      nodes: _nodes,
-                      heading: _heading,
-                      bearing: _bearingTo(target, position),
-                      categoryLabel: _category(target.category),
-                      distanceText: _distanceText(_distanceTo(target, position)),
-                      usingCachedNodes: _usingCachedNodes,
-                      onNodeSelected: (node) => setState(() => _selected = node),
-                      onMap: () => _openMap(target),
-                      onCall: target.phoneE164 == null ? null : () => _call(target),
-                    ),
+              : _CompassBody(
+                  node: target,
+                  nodes: _nodes,
+                  heading: _heading,
+                  bearing: _bearingTo(target, position),
+                  categoryLabel: _category(target.category),
+                  distanceText: _distanceText(_distanceTo(target, position)),
+                  sourceLabel: _sourceLabel,
+                  sourceColor: _sourceColor,
+                  onNodeSelected: (node) => setState(() => _selected = node),
+                  onMap: () => _openMap(target),
+                  onCall: target.phoneE164 == null ? null : () => _call(target),
+                ),
     );
   }
 }
@@ -241,7 +320,8 @@ class _CompassBody extends StatelessWidget {
     required this.bearing,
     required this.categoryLabel,
     required this.distanceText,
-    required this.usingCachedNodes,
+    required this.sourceLabel,
+    required this.sourceColor,
     required this.onNodeSelected,
     required this.onMap,
     required this.onCall,
@@ -253,7 +333,8 @@ class _CompassBody extends StatelessWidget {
   final double bearing;
   final String categoryLabel;
   final String distanceText;
-  final bool usingCachedNodes;
+  final String sourceLabel;
+  final Color sourceColor;
   final ValueChanged<SafeNodePoint> onNodeSelected;
   final VoidCallback onMap;
   final VoidCallback? onCall;
@@ -270,38 +351,57 @@ class _CompassBody extends StatelessWidget {
 
     return SafeArea(
       child: ListView(
-        padding: const EdgeInsets.fromLTRB(24, 18, 24, 32),
+        padding: const EdgeInsets.fromLTRB(22, 16, 22, 30),
         children: [
-          const Text(
-            'Move toward verified human help',
-            textAlign: TextAlign.center,
-            style: TextStyle(fontWeight: FontWeight.w900, fontSize: 20, color: ViraColors.plum),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            usingCachedNodes
-                ? 'Using Safe Nodes cached earlier on this phone.'
-                : 'GPS + device compass. Safe Nodes come from the verified ViraNari directory.',
-            textAlign: TextAlign.center,
-            style: const TextStyle(color: ViraColors.mutedPlum),
-          ),
-          const SizedBox(height: 22),
           Container(
-            padding: const EdgeInsets.all(18),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+            decoration: BoxDecoration(
+              color: sourceColor.withValues(alpha: .10),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: sourceColor.withValues(alpha: .30)),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  node.verified ? Icons.verified_rounded : Icons.public_rounded,
+                  color: sourceColor,
+                  size: 18,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    sourceLabel,
+                    style: TextStyle(
+                      color: sourceColor,
+                      fontWeight: FontWeight.w800,
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
             decoration: BoxDecoration(
               color: ViraColors.surface,
-              borderRadius: BorderRadius.circular(24),
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: ViraColors.lilacStrong),
             ),
             child: DropdownButtonHideUnderline(
               child: DropdownButton<SafeNodePoint>(
                 value: node,
                 isExpanded: true,
                 items: nodes
-                    .take(12)
+                    .take(20)
                     .map(
                       (n) => DropdownMenuItem(
                         value: n,
-                        child: Text('${n.name} · ${n.approxDistanceM >= 1000 ? '${(n.approxDistanceM / 1000).toStringAsFixed(1)} km' : '${n.approxDistanceM} m'}'),
+                        child: Text(
+                          '${n.name} · ${n.approxDistanceM >= 1000 ? '${(n.approxDistanceM / 1000).toStringAsFixed(1)} km' : '${n.approxDistanceM} m'}',
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
                     )
                     .toList(),
@@ -311,11 +411,11 @@ class _CompassBody extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(height: 26),
+          const SizedBox(height: 22),
           Center(
             child: SizedBox(
-              width: 270,
-              height: 270,
+              width: 255,
+              height: 255,
               child: Stack(
                 alignment: Alignment.center,
                 children: [
@@ -326,54 +426,80 @@ class _CompassBody extends StatelessWidget {
                       border: Border.all(color: ViraColors.lilacStrong, width: 2),
                     ),
                   ),
-                  const Positioned(top: 14, child: Text('N', style: TextStyle(fontWeight: FontWeight.w900))),
+                  const Positioned(
+                    top: 12,
+                    child: Text('N', style: TextStyle(fontWeight: FontWeight.w900)),
+                  ),
+                  const Positioned(
+                    bottom: 12,
+                    child: Text('S', style: TextStyle(fontWeight: FontWeight.w700, color: ViraColors.mutedPlum)),
+                  ),
+                  const Positioned(
+                    left: 14,
+                    child: Text('W', style: TextStyle(fontWeight: FontWeight.w700, color: ViraColors.mutedPlum)),
+                  ),
+                  const Positioned(
+                    right: 14,
+                    child: Text('E', style: TextStyle(fontWeight: FontWeight.w700, color: ViraColors.mutedPlum)),
+                  ),
                   Transform.rotate(
                     angle: angle,
                     child: const Icon(
                       Icons.navigation_rounded,
-                      size: 150,
+                      size: 138,
                       color: ViraColors.pinkDark,
                     ),
                   ),
                   Container(
-                    width: 22,
-                    height: 22,
-                    decoration: const BoxDecoration(shape: BoxShape.circle, color: ViraColors.plum),
+                    width: 20,
+                    height: 20,
+                    decoration: const BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: ViraColors.plum,
+                    ),
                   ),
                 ],
               ),
             ),
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 18),
           Text(
             distanceText,
             textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 34, fontWeight: FontWeight.w900, color: ViraColors.plum),
+            style: const TextStyle(
+              fontSize: 34,
+              fontWeight: FontWeight.w900,
+              color: ViraColors.plum,
+            ),
           ),
-          const SizedBox(height: 5),
+          const SizedBox(height: 4),
           Text(
             node.name,
             textAlign: TextAlign.center,
             style: const TextStyle(fontSize: 21, fontWeight: FontWeight.w900),
           ),
+          const SizedBox(height: 4),
           Text(
-            '$categoryLabel · ${_direction(bearing)} · bearing ${bearing.toStringAsFixed(0)}°',
+            '$categoryLabel · ${_direction(bearing)} · ${bearing.toStringAsFixed(0)}°',
             textAlign: TextAlign.center,
             style: const TextStyle(color: ViraColors.mutedPlum),
           ),
           if (heading == null) ...[
             const SizedBox(height: 10),
             const Text(
-              'Compass heading is unavailable. Move the phone in a figure-eight to calibrate; the distance and map button still work.',
+              'Compass sensor is not reporting a heading yet. Move the phone in a figure-eight to calibrate it. Distance and Open map still work.',
               textAlign: TextAlign.center,
-              style: TextStyle(color: ViraColors.warning, fontWeight: FontWeight.w700),
+              style: TextStyle(
+                color: ViraColors.warning,
+                fontWeight: FontWeight.w700,
+              ),
             ),
           ],
-          if (node.address != null) ...[
-            const SizedBox(height: 10),
+          if (node.address != null && node.address!.trim().isNotEmpty) ...[
+            const SizedBox(height: 9),
             Text(node.address!, textAlign: TextAlign.center),
           ],
-          const SizedBox(height: 22),
+          const SizedBox(height: 20),
           Row(
             children: [
               Expanded(
@@ -402,32 +528,63 @@ class _CompassBody extends StatelessWidget {
 }
 
 class _EmptyCompass extends StatelessWidget {
-  const _EmptyCompass({required this.usingCache});
-  final bool usingCache;
+  const _EmptyCompass({
+    required this.error,
+    required this.onRefresh,
+    required this.onOpenSearch,
+  });
+
+  final String? error;
+  final VoidCallback onRefresh;
+  final VoidCallback? onOpenSearch;
 
   @override
   Widget build(BuildContext context) {
     return Center(
-      child: Padding(
+      child: SingleChildScrollView(
         padding: const EdgeInsets.all(28),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.explore_off_outlined, size: 62, color: ViraColors.mutedPlum),
+            const Icon(
+              Icons.explore_off_outlined,
+              size: 62,
+              color: ViraColors.mutedPlum,
+            ),
             const SizedBox(height: 14),
             const Text(
-              'No verified Safe Node is configured nearby',
+              'No safety place was found nearby',
               textAlign: TextAlign.center,
               style: TextStyle(fontWeight: FontWeight.w900, fontSize: 20),
             ),
             const SizedBox(height: 8),
-            Text(
-              usingCache
-                  ? 'The phone is offline and the cached Safe Node list has no verified place within 25 km.'
-                  : 'A server operator must verify real police, hospital, campus-security, pharmacy, or staffed locations before ViraNari points a victim toward them.',
+            const Text(
+              'ViraNari first checks operator-verified Safe Nodes, then falls back to public police, hospital, clinic and pharmacy data from OpenStreetMap. Successful results are cached for later use.',
               textAlign: TextAlign.center,
-              style: const TextStyle(color: ViraColors.mutedPlum, height: 1.4),
+              style: TextStyle(color: ViraColors.mutedPlum, height: 1.4),
             ),
+            if (error != null && error!.trim().isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Text(
+                error!,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: ViraColors.warning, fontSize: 12),
+              ),
+            ],
+            const SizedBox(height: 18),
+            FilledButton.icon(
+              onPressed: onRefresh,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Try again'),
+            ),
+            if (onOpenSearch != null) ...[
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                onPressed: onOpenSearch,
+                icon: const Icon(Icons.map_outlined),
+                label: const Text('Search nearby help in Maps'),
+              ),
+            ],
           ],
         ),
       ),

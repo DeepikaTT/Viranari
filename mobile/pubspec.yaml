@@ -1,7 +1,7 @@
 name: viranari_app
 description: ViraNari v1.5 Safety Around Me with anonymous Safety Map, Silent SOS and Safety Compass.
 publish_to: 'none'
-version: 1.5.0+20
+version: 1.7.0+30
 
 environment:
   sdk: '>=3.13.0 <4.0.0'
