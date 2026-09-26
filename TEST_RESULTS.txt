@@ -1,16 +1,8 @@
-ViraNari v1.8.5 validation
+ViraNari V1.8.6 validation
 
-Backend:
-  python -m pytest -q
-  37 passed
+Backend pytest: 37 passed
 
-Mobile source checks performed during packaging:
-  - V1.8.4 Home emergency trail layers replaced with one responder-victim connector on Home only.
-  - Android notification bridge includes incoming SOS + nearby emergency methods.
-  - No database migration introduced.
-
-Flutter SDK is not installed in the packaging environment.
-Required local check:
+Flutter SDK is not installed in the packaging environment, so run locally:
   flutter clean
   flutter pub get
   flutter analyze

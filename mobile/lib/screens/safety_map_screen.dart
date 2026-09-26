@@ -290,6 +290,54 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
     );
   }
 
+  Future<void> _setPeopleRadius(int radius) async {
+    if (radius == _peopleRadiusM) {
+      final me = _position;
+      if (me != null) {
+        _followMe = true;
+        _mapController.move(
+          LatLng(me.latitude, me.longitude),
+          _zoomForRadius(radius),
+        );
+      }
+      return;
+    }
+
+    setState(() {
+      _peopleRadiusM = radius;
+      _followMe = true;
+      // Immediately hide dots outside the newly selected radius even before
+      // the network refresh finishes.
+      _presence = _presence
+          .where((point) => point.approxDistanceM <= radius)
+          .toList(growable: false);
+    });
+
+    final me = _position;
+    if (me != null) {
+      _mapController.move(
+        LatLng(me.latitude, me.longitude),
+        _zoomForRadius(radius),
+      );
+    }
+
+    // If the periodic refresh is currently in-flight, wait briefly instead
+    // of dropping this user-requested radius change. This matters when
+    // expanding 500 m -> 2 km/5 km because new dots must be queried.
+    for (var i = 0; i < 20 && _refreshing; i++) {
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
+    await _refresh(silent: true);
+    if (!mounted) return;
+    final refreshedMe = _position;
+    if (refreshedMe != null) {
+      _mapController.move(
+        LatLng(refreshedMe.latitude, refreshedMe.longitude),
+        _zoomForRadius(radius),
+      );
+    }
+  }
+
   Future<void> _togglePresence(bool value) async {
     try {
       final deviceId = await _settings.installationId();
@@ -468,6 +516,9 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
     }
 
     final center = LatLng(me.latitude, me.longitude);
+    final visiblePresence = _presence
+        .where((point) => point.approxDistanceM <= _peopleRadiusM)
+        .toList(growable: false);
     // Safety places are intentionally independent from the anonymous-people
     // radius. The 500 m / 2 km / 5 km selector controls people only.
     final visibleSafeNodes = _safeNodes
@@ -484,7 +535,7 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
         .length;
 
     final presenceMarkers = _enabled
-        ? _presence
+        ? visiblePresence
             .map(
               (point) => Marker(
                 point: _projectPoint(me, point),
@@ -741,7 +792,7 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
                       Expanded(
                         child: Text(
                           _enabled
-                              ? '${_presence.length} anonymous device${_presence.length == 1 ? '' : 's'} nearby'
+                              ? '${visiblePresence.length} anonymous device${visiblePresence.length == 1 ? '' : 's'} within ${_peopleRadiusM == 500 ? '500 m' : '${_peopleRadiusM ~/ 1000} km'}'
                               : 'Turn on anonymous presence to see nearby dots',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
@@ -800,13 +851,10 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
                             ],
                             selected: {_peopleRadiusM},
                             onSelectionChanged: (value) {
-                              final radius = value.first;
-                              setState(() {
-                                _peopleRadiusM = radius;
-                              });
-                              // People radius filters anonymous presence only.
-                              // Safety-place pins remain available independently.
-                              unawaited(_refresh());
+                              // Radius changes both the anonymous-device query
+                              // and the visible map zoom immediately. Safety
+                              // place pins remain independent and stay visible.
+                              unawaited(_setPeopleRadius(value.first));
                             },
                           ),
                         ),

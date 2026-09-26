@@ -584,16 +584,27 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   Future<void> _refreshLatest({bool silent = false}) async {
     if (_latest == null || !_backendOnline) return;
+    final alertId = _latest!.id;
+
     try {
-      final alertId = _latest!.id;
-      final results = await Future.wait([
-        widget.session.api.getAlert(alertId),
-        widget.session.api.responders(alertId),
-        widget.session.api.locations(alertId),
-      ]);
-      final refreshed = results[0] as AlertRecord;
-      final responders = results[1] as List<ResponderState>;
-      final victimTrail = results[2] as List<AlertLocationPoint>;
+      final refreshed = await widget.session.api.getAlert(alertId);
+
+      // Responder/trail reads are deliberately isolated. A slow responder GPS
+      // request must not prevent the victim's SOS state, delivery state, or
+      // victim GPS from refreshing.
+      var responders = _responders;
+      var victimTrail = _homeVictimTrail;
+      try {
+        responders = await widget.session.api.responders(alertId);
+      } catch (_) {
+        // Keep the last reliable responder position/ETA while the next poll retries.
+      }
+      try {
+        victimTrail = await widget.session.api.locations(alertId);
+      } catch (_) {
+        // Keep the current trail if the history request is temporarily slow.
+      }
+
       if (!mounted) return;
       setState(() {
         _latest = refreshed;
@@ -617,7 +628,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         _nearbyVictimNotifiedAlertId = null;
         await _stopLiveTracking();
       }
-    } catch (_) {}
+    } catch (_) {
+      // Keep the current emergency card visible with its last reliable state.
+    }
   }
 
   double _liveDistanceToResponder(AlertRecord latest, ResponderState responder) {
@@ -685,6 +698,15 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final hours = minutes ~/ 60;
     final rest = minutes % 60;
     return rest == 0 ? '~${hours}h' : '~${hours}h ${rest}m';
+  }
+
+  String _responderFreshness(DateTime? time) {
+    if (time == null) return 'waiting';
+    final age = DateTime.now().difference(time.toLocal());
+    if (age.isNegative || age.inSeconds < 5) return 'live now';
+    if (age.inSeconds < 60) return '${age.inSeconds}s ago';
+    if (age.inMinutes < 60) return '${age.inMinutes}m ago';
+    return '${age.inHours}h ago';
   }
 
   ResponderState? get _primaryResponder {
@@ -959,22 +981,23 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         ? 0
         : _combinedGpsAccuracyM(latest, responder);
     final nearby = responder != null && mapDistance <= 100;
+    final responderFreshness = _responderFreshness(responderUpdated);
 
     return Container(
-      padding: const EdgeInsets.fromLTRB(14, 14, 14, 16),
+      padding: const EdgeInsets.fromLTRB(14, 14, 14, 15),
       decoration: BoxDecoration(
-        color: active ? const Color(0xFFFFE9EF) : ViraColors.lilac,
-        borderRadius: BorderRadius.circular(28),
+        color: active ? const Color(0xFFFFF2F5) : ViraColors.lilac,
+        borderRadius: BorderRadius.circular(26),
         border: Border.all(
           color: active
-              ? ViraColors.pink.withValues(alpha: .28)
+              ? ViraColors.pink.withValues(alpha: .22)
               : ViraColors.lilacStrong,
         ),
         boxShadow: const [
           BoxShadow(
-            color: Color(0x0D000000),
-            blurRadius: 16,
-            offset: Offset(0, 6),
+            color: Color(0x0A000000),
+            blurRadius: 14,
+            offset: Offset(0, 5),
           ),
         ],
       ),
@@ -982,106 +1005,153 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               Container(
-                width: 44,
-                height: 44,
+                width: 38,
+                height: 38,
                 decoration: BoxDecoration(
-                  color: ViraColors.pinkDark.withValues(alpha: .10),
-                  shape: BoxShape.circle,
+                  color: active
+                      ? ViraColors.pinkDark.withValues(alpha: .10)
+                      : ViraColors.plum.withValues(alpha: .08),
+                  borderRadius: BorderRadius.circular(13),
                 ),
                 child: Icon(
-                  active ? Icons.emergency_share_rounded : Icons.shield_rounded,
+                  active ? Icons.emergency_rounded : Icons.shield_rounded,
                   color: active ? ViraColors.pinkDark : ViraColors.plum,
-                  size: 27,
+                  size: 23,
                 ),
               ),
               const SizedBox(width: 10),
               Expanded(
-                child: RichText(
-                  text: TextSpan(
-                    style: const TextStyle(
-                      fontSize: 24,
-                      fontWeight: FontWeight.w900,
-                      color: Colors.black87,
-                      height: 1,
-                    ),
-                    children: [
-                      const TextSpan(text: 'Emergency '),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text.rich(
                       TextSpan(
-                        text: latest.state.toUpperCase(),
-                        style: TextStyle(
-                          color: active ? ViraColors.pinkDark : ViraColors.plum,
+                        style: const TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w900,
+                          color: Colors.black87,
+                          height: 1.05,
                         ),
+                        children: [
+                          const TextSpan(text: 'Emergency '),
+                          TextSpan(
+                            text: latest.state.toUpperCase(),
+                            style: TextStyle(
+                              color: active ? ViraColors.pinkDark : ViraColors.plum,
+                            ),
+                          ),
+                        ],
                       ),
-                    ],
-                  ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${latest.acknowledgedCount}/${latest.recipients.length} acknowledged  •  '
+                      '${latest.deliveredCount}/${latest.recipients.length} delivered',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 11,
+                        color: ViraColors.mutedPlum,
+                      ),
+                    ),
+                  ],
                 ),
               ),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
                 decoration: BoxDecoration(
                   color: latest.acknowledgedCount > 0
-                      ? const Color(0xFFCDEDEA)
-                      : Colors.white.withValues(alpha: .76),
-                  borderRadius: BorderRadius.circular(15),
+                      ? const Color(0xFFD7F0EE)
+                      : Colors.white,
+                  borderRadius: BorderRadius.circular(99),
+                  border: Border.all(
+                    color: ViraColors.plum.withValues(alpha: .08),
+                  ),
                 ),
                 child: Text(
                   latest.deliveryState,
                   style: const TextStyle(
                     fontWeight: FontWeight.w900,
                     color: ViraColors.plum,
-                    fontSize: 12,
+                    fontSize: 10,
                   ),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 8),
-          Padding(
-            padding: const EdgeInsets.only(left: 54),
-            child: Text(
-              '${latest.acknowledgedCount}/${latest.recipients.length} acknowledged   •   '
-              '${latest.deliveredCount}/${latest.recipients.length} delivered',
-              style: const TextStyle(
-                fontWeight: FontWeight.w800,
-                fontSize: 13,
-                color: Colors.black87,
-              ),
-            ),
-          ),
           if (active) ...[
-            if (nearby) ...[
-              const SizedBox(height: 13),
+            const SizedBox(height: 12),
+            if (responder != null)
+              Row(
+                children: [
+                  Expanded(
+                    child: _EmergencyMetric(
+                      icon: Icons.social_distance_rounded,
+                      label: 'DISTANCE',
+                      value: _responderDistance(liveDistanceM),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _EmergencyMetric(
+                      icon: Icons.schedule_rounded,
+                      label: 'APPROX ETA',
+                      value: _responderEta(liveEtaSeconds),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _EmergencyMetric(
+                      icon: Icons.gps_fixed_rounded,
+                      label: 'GPS PRECISION',
+                      value: combinedAccuracy > 0 ? '±$combinedAccuracy m' : 'checking',
+                    ),
+                  ),
+                ],
+              )
+            else
               Container(
                 width: double.infinity,
-                padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 11),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                 decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: .68),
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: ViraColors.pink.withValues(alpha: .26)),
+                  color: Colors.white.withValues(alpha: .82),
+                  borderRadius: BorderRadius.circular(15),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.hourglass_top_rounded, size: 19, color: ViraColors.warning),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Waiting for an acknowledged responder location…',
+                        style: TextStyle(fontWeight: FontWeight.w800, fontSize: 12),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            if (nearby) ...[
+              const SizedBox(height: 9),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFE1E8),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: ViraColors.pink.withValues(alpha: .22)),
                 ),
                 child: Row(
                   children: [
-                    const Icon(Icons.radar_rounded, color: ViraColors.pinkDark),
-                    const SizedBox(width: 8),
+                    const Icon(Icons.near_me_rounded, color: ViraColors.pinkDark, size: 18),
+                    const SizedBox(width: 7),
                     Expanded(
-                      child: Text.rich(
-                        TextSpan(
-                          style: const TextStyle(
-                            color: Colors.black87,
-                            fontWeight: FontWeight.w800,
-                            fontSize: 12,
-                          ),
-                          children: [
-                            const TextSpan(text: 'Nearby alert: '),
-                            TextSpan(
-                              text: '${responder!.responderName} is about '
-                                  '${_responderDistance(liveDistanceM)} away.',
-                              style: const TextStyle(color: ViraColors.pinkDark),
-                            ),
-                          ],
+                      child: Text(
+                        '${responder!.responderName} is nearby — about ${_responderDistance(liveDistanceM)} away.',
+                        style: const TextStyle(
+                          color: ViraColors.pinkDark,
+                          fontWeight: FontWeight.w900,
+                          fontSize: 11,
                         ),
                       ),
                     ),
@@ -1089,11 +1159,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 ),
               ),
             ],
-            const SizedBox(height: 13),
+            const SizedBox(height: 10),
             ClipRRect(
-              borderRadius: BorderRadius.circular(22),
+              borderRadius: BorderRadius.circular(20),
               child: SizedBox(
-                height: 270,
+                height: 238,
                 child: Stack(
                   children: [
                     Positioned.fill(
@@ -1115,7 +1185,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                               polylines: [
                                 Polyline(
                                   points: [responderPoint, victimPoint],
-                                  strokeWidth: 6,
+                                  strokeWidth: 4,
                                   color: const Color(0xFF2563EB),
                                 ),
                               ],
@@ -1124,11 +1194,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                             markers: [
                               Marker(
                                 point: victimPoint,
-                                width: 98,
-                                height: 84,
+                                width: 90,
+                                height: 74,
                                 child: const _EmergencyMapMarker(
                                   label: 'Victim',
-                                  icon: Icons.location_on_rounded,
+                                  icon: Icons.person_pin_circle_rounded,
                                   color: ViraColors.pinkDark,
                                 ),
                               ),
@@ -1136,11 +1206,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                                 Marker(
                                   point: responderPoint,
                                   width: 118,
-                                  height: 84,
+                                  height: 74,
                                   child: _EmergencyMapMarker(
                                     label: responder!.responderName,
-                                    icon: Icons.directions_car_filled_rounded,
+                                    icon: Icons.navigation_rounded,
                                     color: const Color(0xFF2563EB),
+                                    headingDeg: responder.headingDeg,
                                   ),
                                 ),
                             ],
@@ -1154,72 +1225,43 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                       ),
                     ),
                     Positioned(
-                      top: 10,
-                      right: 10,
+                      top: 9,
+                      right: 9,
                       child: Material(
-                        color: Colors.white.withValues(alpha: .95),
-                        borderRadius: BorderRadius.circular(15),
-                        elevation: 2,
+                        color: Colors.white.withValues(alpha: .96),
+                        borderRadius: BorderRadius.circular(14),
+                        elevation: 1,
                         child: IconButton(
                           tooltip: 'Fit victim and responder',
                           onPressed: _fitEmergencyMap,
                           icon: const Icon(
-                            Icons.gps_fixed_rounded,
+                            Icons.center_focus_strong_rounded,
                             color: ViraColors.plum,
+                            size: 21,
                           ),
                         ),
                       ),
                     ),
-                    if (responder != null)
-                      Positioned(
-                        left: 12,
-                        bottom: 12,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 8,
-                          ),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF2563EB),
-                            borderRadius: BorderRadius.circular(13),
-                            boxShadow: const [
-                              BoxShadow(color: Colors.black12, blurRadius: 8),
-                            ],
-                          ),
-                          child: Text(
-                            '${_responderDistance(liveDistanceM)}  •  ETA ${_responderEta(liveEtaSeconds)}',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.w900,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ),
-                      ),
                   ],
                 ),
               ),
             ),
-            const SizedBox(height: 11),
+            const SizedBox(height: 10),
             Container(
               width: double.infinity,
-              padding: const EdgeInsets.fromLTRB(14, 13, 14, 13),
+              padding: const EdgeInsets.fromLTRB(12, 11, 12, 11),
               decoration: BoxDecoration(
                 color: Colors.white.withValues(alpha: .90),
-                borderRadius: BorderRadius.circular(19),
+                borderRadius: BorderRadius.circular(17),
               ),
               child: responder == null
-                  ? const Row(
-                      children: [
-                        Icon(Icons.hourglass_top_rounded, color: ViraColors.warning),
-                        SizedBox(width: 9),
-                        Expanded(
-                          child: Text(
-                            'Waiting for a trusted contact to accept and share responder GPS.',
-                            style: TextStyle(fontWeight: FontWeight.w800),
-                          ),
-                        ),
-                      ],
+                  ? const Text(
+                      'The map will add the responder as soon as an acknowledged trusted contact shares GPS.',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: ViraColors.mutedPlum,
+                        fontWeight: FontWeight.w700,
+                      ),
                     )
                   : Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1227,106 +1269,99 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                         Row(
                           children: [
                             Container(
-                              width: 38,
-                              height: 38,
+                              width: 34,
+                              height: 34,
                               decoration: BoxDecoration(
                                 color: const Color(0xFF2563EB).withValues(alpha: .10),
                                 shape: BoxShape.circle,
                               ),
                               child: const Icon(
-                                Icons.directions_car_filled_rounded,
+                                Icons.navigation_rounded,
                                 color: Color(0xFF2563EB),
-                                size: 21,
+                                size: 18,
                               ),
                             ),
-                            const SizedBox(width: 10),
+                            const SizedBox(width: 9),
                             Expanded(
-                              child: Text(
-                                '${responder.responderName} → Victim  •  '
-                                '${_responderDistance(liveDistanceM)} away  •  '
-                                'ETA ${_responderEta(liveEtaSeconds)}',
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w900,
-                                  fontSize: 13,
-                                ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    '${responder.responderName} is responding',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w900,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                  Text(
+                                    '${_responderDistance(liveDistanceM)} away  •  ETA ${_responderEta(liveEtaSeconds)}  •  $responderFreshness',
+                                    style: const TextStyle(
+                                      fontSize: 10,
+                                      color: ViraColors.mutedPlum,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
                           ],
                         ),
                         const SizedBox(height: 8),
                         Text(
-                          'Responder GPS: ${responder.latitude.toStringAsFixed(5)}, '
-                          '${responder.longitude.toStringAsFixed(5)}',
+                          'Victim ${victimPoint.latitude.toStringAsFixed(5)}, ${victimPoint.longitude.toStringAsFixed(5)}   •   '
+                          'Responder ${responder.latitude.toStringAsFixed(5)}, ${responder.longitude.toStringAsFixed(5)}',
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
-                            fontSize: 11,
-                            color: ViraColors.mutedPlum,
-                          ),
-                        ),
-                        Text(
-                          'Victim GPS: ${victimPoint.latitude.toStringAsFixed(5)}, '
-                          '${victimPoint.longitude.toStringAsFixed(5)}',
-                          style: const TextStyle(
-                            fontSize: 11,
+                            fontSize: 9.5,
                             color: ViraColors.mutedPlum,
                           ),
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          'GPS separation ${_responderDistance(liveDistanceM)}'
-                          '${combinedAccuracy > 0 ? '  •  combined accuracy ±$combinedAccuracy m' : ''}'
-                          '${responderUpdated == null ? '' : '  •  updated ${DateFormat('h:mm:ss a').format(responderUpdated)}'}',
+                          'Straight-line GPS separation ${_responderDistance(liveDistanceM)}'
+                          '${combinedAccuracy > 0 ? '  •  estimated uncertainty ±$combinedAccuracy m' : ''}',
                           style: const TextStyle(
-                            fontSize: 10,
+                            fontSize: 9.5,
                             color: ViraColors.mutedPlum,
                             fontWeight: FontWeight.w700,
                           ),
                         ),
-                        if (_responders.length > 1) ...[
-                          const SizedBox(height: 5),
-                          Text(
-                            '+${_responders.length - 1} more trusted responder${_responders.length == 2 ? '' : 's'} active',
-                            style: const TextStyle(
-                              fontSize: 10,
-                              color: ViraColors.gold,
-                              fontWeight: FontWeight.w800,
-                            ),
-                          ),
-                        ],
                       ],
                     ),
             ),
-            const SizedBox(height: 13),
+            const SizedBox(height: 12),
             Row(
               children: [
                 Expanded(
                   child: SizedBox(
-                    height: 52,
+                    height: 50,
                     child: FilledButton.icon(
                       style: FilledButton.styleFrom(
                         backgroundColor: const Color(0xFFBFE7E5),
                         foregroundColor: ViraColors.plum,
                         shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(18),
+                          borderRadius: BorderRadius.circular(17),
                         ),
                       ),
                       onPressed: _resolveSafe,
                       icon: const Icon(Icons.shield_rounded),
                       label: const Text(
                         "I'm safe",
-                        style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+                        style: TextStyle(fontWeight: FontWeight.w900, fontSize: 15),
                       ),
                     ),
                   ),
                 ),
-                const SizedBox(width: 10),
+                const SizedBox(width: 9),
                 Expanded(
                   child: SizedBox(
-                    height: 52,
+                    height: 50,
                     child: TextButton(
                       onPressed: _cancelFalseAlarm,
                       child: const Text(
                         'False alarm',
-                        style: TextStyle(fontWeight: FontWeight.w900, fontSize: 15),
+                        style: TextStyle(fontWeight: FontWeight.w900, fontSize: 14),
                       ),
                     ),
                   ),
@@ -1530,39 +1565,129 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 }
 
+class _EmergencyMetric extends StatelessWidget {
+  const _EmergencyMetric({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 9),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: .88),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: ViraColors.plum.withValues(alpha: .07)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 14, color: ViraColors.plum),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 7.5,
+                    color: ViraColors.mutedPlum,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: .2,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              fontSize: 13,
+              color: ViraColors.plum,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _EmergencyMapMarker extends StatelessWidget {
   const _EmergencyMapMarker({
     required this.label,
     required this.icon,
     required this.color,
+    this.headingDeg,
   });
 
   final String label;
   final IconData icon;
   final Color color;
+  final double? headingDeg;
 
   @override
   Widget build(BuildContext context) {
+    final markerIcon = Icon(icon, size: 20, color: Colors.white);
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          constraints: const BoxConstraints(maxWidth: 108),
+          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
           decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: .96),
-            borderRadius: BorderRadius.circular(10),
-            boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 5)],
+            color: Colors.white.withValues(alpha: .97),
+            borderRadius: BorderRadius.circular(99),
+            border: Border.all(color: color.withValues(alpha: .16)),
+            boxShadow: const [
+              BoxShadow(color: Color(0x18000000), blurRadius: 5, offset: Offset(0, 2)),
+            ],
           ),
           child: Text(
             label,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 10, fontWeight: FontWeight.w900, color: color),
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 9.5,
+              fontWeight: FontWeight.w900,
+              color: color,
+            ),
           ),
         ),
-        Icon(icon, size: 34, color: color, shadows: const [Shadow(blurRadius: 5, color: Colors.white)]),
+        const SizedBox(height: 3),
+        Container(
+          width: 34,
+          height: 34,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: color,
+            border: Border.all(color: Colors.white, width: 3),
+            boxShadow: const [
+              BoxShadow(color: Color(0x26000000), blurRadius: 7, offset: Offset(0, 3)),
+            ],
+          ),
+          child: Center(
+            child: headingDeg == null
+                ? markerIcon
+                : Transform.rotate(
+                    angle: headingDeg! * math.pi / 180,
+                    child: markerIcon,
+                  ),
+          ),
+        ),
       ],
     );
   }
 }
-

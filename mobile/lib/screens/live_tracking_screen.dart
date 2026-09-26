@@ -29,6 +29,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
   final LocationService _location = LocationService();
   final NotificationService _notifications = NotificationService();
   Timer? _timer;
+  StreamSubscription<Position>? _responderLocationSubscription;
   AlertRecord? _alert;
   List<AlertLocationPoint> _points = const [];
   List<ResponderTrailPoint> _responderTrail = const [];
@@ -40,6 +41,9 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
   bool _sharingResponderLocation = false;
   bool _showGpsTimeline = true;
   bool _nearbyNotified = false;
+  bool _responderUploadInFlight = false;
+  DateTime? _lastResponderSyncAt;
+  String? _responderSyncNote;
   String? _error;
 
   @override
@@ -48,18 +52,27 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
     WidgetsBinding.instance.addObserver(this);
     _sharingResponderLocation = widget.initial.acknowledgedAt != null;
     _refresh();
+    if (_sharingResponderLocation) {
+      unawaited(_startResponderTracking());
+    }
     _timer = Timer.periodic(const Duration(seconds: 3), (_) => _refresh(silent: true));
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) unawaited(_refresh());
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_refresh());
+      if (_sharingResponderLocation && _responderLocationSubscription == null) {
+        unawaited(_startResponderTracking());
+      }
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _timer?.cancel();
+    _responderLocationSubscription?.cancel();
     super.dispose();
   }
 
@@ -71,30 +84,22 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
         widget.session.api.getAlert(widget.initial.alertId),
         widget.session.api.locations(widget.initial.alertId),
         widget.session.api.responderTrail(widget.initial.alertId),
+        widget.session.api.responders(widget.initial.alertId),
       ]);
       final alert = results[0] as AlertRecord;
       final points = results[1] as List<AlertLocationPoint>;
       final responderTrail = results[2] as List<ResponderTrailPoint>;
+      final responderStates = results[3] as List<ResponderState>;
+      final responder = responderStates.isNotEmpty
+          ? responderStates.first
+          : _myResponderState;
 
-      ResponderState? responder;
-      Position? myPosition;
-      if (_sharingResponderLocation && alert.isActive) {
-        try {
-          myPosition = await _location.current();
-          responder = await widget.session.api.updateResponderLocation(
-            widget.initial.alertId,
-            latitude: myPosition.latitude,
-            longitude: myPosition.longitude,
-            accuracyM: myPosition.accuracy,
-            speedMps: _safeSpeed(myPosition),
-            headingDeg: _safeHeading(myPosition),
-          );
-        } catch (e) {
-          if (!silent) _error = 'Responder GPS: ${_cleanError(e)}';
-        }
+      if (_sharingResponderLocation && alert.isActive &&
+          _responderLocationSubscription == null) {
+        unawaited(_startResponderTracking());
       }
 
-      if (responder != null && myPosition != null && alert.isActive) {
+      if (responder != null && alert.isActive) {
         final victim = points.isNotEmpty
             ? points.last
             : AlertLocationPoint(
@@ -105,12 +110,14 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
                 batteryPercent: alert.batteryPercent,
                 networkState: alert.networkState,
               );
+        final responderLat = _myPosition?.latitude ?? responder.latitude;
+        final responderLon = _myPosition?.longitude ?? responder.longitude;
         await _maybeNotifyNearby(
           alertId: alert.id,
           victimName: widget.initial.senderName,
           distanceM: Geolocator.distanceBetween(
-            myPosition.latitude,
-            myPosition.longitude,
+            responderLat,
+            responderLon,
             victim.latitude,
             victim.longitude,
           ),
@@ -122,9 +129,8 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
         _alert = alert;
         _points = points;
         _responderTrail = responderTrail;
-        if (myPosition != null) _myPosition = myPosition;
         if (responder != null) _myResponderState = responder;
-        if (responder != null || !_sharingResponderLocation) _error = null;
+        if (!_sharingResponderLocation) _error = null;
         _loading = false;
       });
       if (_follow && points.isNotEmpty) {
@@ -141,6 +147,110 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
       });
     } finally {
       _refreshing = false;
+    }
+  }
+
+  Future<void> _startResponderTracking() async {
+    if (!_sharingResponderLocation || _responderLocationSubscription != null) return;
+
+    // Warm the stream with a best-effort fix. A recent previous/last-known fix
+    // is acceptable during GPS warm-up, so a transient timeout never blanks the
+    // responder marker or ETA.
+    try {
+      final first = await _location.currentBestEffort(fallback: _myPosition);
+      await _publishResponderPosition(first);
+    } catch (_) {
+      if (mounted) {
+        setState(() => _responderSyncNote = 'GPS warming up — keeping the last reliable responder position.');
+      }
+    }
+
+    try {
+      final stream = await _location.responderStream();
+      late final StreamSubscription<Position> subscription;
+      subscription = stream.listen(
+        (position) => unawaited(_publishResponderPosition(position)),
+        onError: (Object _) async {
+          await subscription.cancel();
+          if (identical(_responderLocationSubscription, subscription)) {
+            _responderLocationSubscription = null;
+          }
+          if (_sharingResponderLocation && mounted) {
+            setState(() => _responderSyncNote = 'Responder GPS reconnecting…');
+            await Future.delayed(const Duration(seconds: 2));
+            if (_sharingResponderLocation && _responderLocationSubscription == null) {
+              unawaited(_startResponderTracking());
+            }
+          }
+        },
+        onDone: () async {
+          if (identical(_responderLocationSubscription, subscription)) {
+            _responderLocationSubscription = null;
+          }
+          if (_sharingResponderLocation && mounted) {
+            await Future.delayed(const Duration(seconds: 2));
+            if (_sharingResponderLocation && _responderLocationSubscription == null) {
+              unawaited(_startResponderTracking());
+            }
+          }
+        },
+      );
+      _responderLocationSubscription = subscription;
+    } catch (_) {
+      if (mounted) {
+        setState(() => _responderSyncNote = 'Responder GPS retrying…');
+      }
+    }
+  }
+
+  bool _usableResponderFix(Position position) {
+    if (!position.latitude.isFinite || !position.longitude.isFinite) return false;
+    if (!position.accuracy.isFinite) return true;
+    // Keep the last reliable point rather than replacing it with a very poor
+    // fix that could make the distance jump hundreds of metres.
+    return position.accuracy <= 100 || _myPosition == null;
+  }
+
+  Future<void> _publishResponderPosition(Position position) async {
+    if (!_sharingResponderLocation || !_usableResponderFix(position)) {
+      if (mounted && _sharingResponderLocation && !_usableResponderFix(position)) {
+        setState(() => _responderSyncNote = 'Weak GPS accuracy — holding the last reliable position.');
+      }
+      return;
+    }
+
+    if (mounted) {
+      setState(() => _myPosition = position);
+    } else {
+      _myPosition = position;
+    }
+    if (_responderUploadInFlight) return;
+
+    _responderUploadInFlight = true;
+    try {
+      final responder = await widget.session.api.updateResponderLocation(
+        widget.initial.alertId,
+        latitude: position.latitude,
+        longitude: position.longitude,
+        accuracyM: position.accuracy,
+        speedMps: _safeSpeed(position),
+        headingDeg: _safeHeading(position),
+      );
+      if (!mounted) return;
+      setState(() {
+        _myResponderState = responder;
+        _lastResponderSyncAt = DateTime.now();
+        _responderSyncNote = null;
+        _error = null;
+      });
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _responderSyncNote = 'Responder GPS sync retrying — your last reliable position stays visible.';
+        });
+      }
+    } finally {
+      _responderUploadInFlight = false;
     }
   }
 
@@ -378,6 +488,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
       await widget.session.api.acknowledge(widget.initial.alertId);
       if (!mounted) return;
       setState(() => _sharingResponderLocation = true);
+      await _startResponderTracking();
       await _refresh();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -543,10 +654,34 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
                           style: TextStyle(color: locationAge.inSeconds < 30 ? ViraColors.mutedPlum : ViraColors.warning, fontWeight: FontWeight.w700),
                         ),
                         if (responder != null) ...[
-                          const SizedBox(height: 8),
+                          const SizedBox(height: 10),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: _LiveCoordMetric(
+                                  icon: Icons.social_distance_rounded,
+                                  label: 'DISTANCE',
+                                  value: _formatDistance(responder.distanceM.toDouble()),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: _LiveCoordMetric(
+                                  icon: Icons.schedule_rounded,
+                                  label: 'ETA TO VICTIM',
+                                  value: _formatEta(responder.etaSeconds),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 5),
                           Text(
-                            'You ↔ ${widget.initial.senderName}: ${_formatDistance(responder.distanceM.toDouble())} · Approx ETA ${_formatEta(responder.etaSeconds)}',
-                            style: const TextStyle(color: ViraColors.gold, fontWeight: FontWeight.w900),
+                            'Same responder ETA is visible on the victim's Emergency Active screen.',
+                            style: const TextStyle(
+                              color: ViraColors.mutedPlum,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700,
+                            ),
                           ),
                         ],
                         _buildGpsTimeline(),
@@ -590,9 +725,12 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
                                 const SizedBox(width: 6),
                                 Expanded(
                                   child: Text(
-                                    _myPosition == null
-                                        ? 'Starting your responder GPS…'
-                                        : 'Your responder GPS updates every few seconds while this screen is open.',
+                                    _responderSyncNote ??
+                                        (_myPosition == null
+                                            ? 'Starting your responder GPS…'
+                                            : _lastResponderSyncAt == null
+                                                ? 'Responder GPS is active. Waiting for first server sync…'
+                                                : 'Responder GPS live · synced ${_ageText(_lastResponderSyncAt)}.'),
                                     style: const TextStyle(color: ViraColors.mutedPlum, fontWeight: FontWeight.w700),
                                   ),
                                 ),
@@ -626,6 +764,62 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
                 ),
               ],
             ),
+    );
+  }
+}
+
+class _LiveCoordMetric extends StatelessWidget {
+  const _LiveCoordMetric({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+      decoration: BoxDecoration(
+        color: ViraColors.gold.withValues(alpha: .10),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: ViraColors.gold.withValues(alpha: .22)),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, size: 17, color: ViraColors.gold),
+          const SizedBox(width: 7),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: const TextStyle(
+                    fontSize: 8,
+                    color: ViraColors.mutedPlum,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: .3,
+                  ),
+                ),
+                Text(
+                  value,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    color: ViraColors.plum,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

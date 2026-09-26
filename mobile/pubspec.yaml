@@ -1,7 +1,7 @@
 name: viranari_app
 description: ViraNari v1.8.5 clean Emergency Active coordination UI + proximity alerts.
 publish_to: 'none'
-version: 1.8.5+45
+version: 1.8.6+46
 
 environment:
   sdk: '>=3.13.0 <4.0.0'

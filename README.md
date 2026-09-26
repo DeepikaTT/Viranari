@@ -1,21 +1,16 @@
-# ViraNari V1.8.5 — Clean Emergency Active
+# ViraNari V1.8.6 — Precision Coordination
 
-V1.8.5 keeps the V1.8.4 emergency coordination system but cleans the Home UI and makes proximity between the victim and acknowledged responder easier to understand.
+V1.8.6 keeps the ViraNari safety network from V1.8.5 and focuses on a cleaner Emergency Active experience, more reliable responder GPS, shared ETA visibility, more honest GPS precision, and fixed Safety Map people-radius controls.
 
-## Main changes
+## Headline changes
 
-- Cleaner Emergency ACTIVE card.
-- One live separation line on the Home emergency map instead of multiple overlapping trails.
-- Fresh client-side GPS distance using the latest victim/responder coordinates.
-- Combined GPS accuracy shown beside the live separation measurement.
-- Nearby alert at <=100 m for both victim and responder.
-- Android notification-bar proximity alert with 150 m reset hysteresis.
-- Cleaner compact Home GPS/status card.
+- Cleaner Emergency Active UI with professional markers.
+- Live GPS separation + combined accuracy estimate.
+- Approx ETA visible to both victim and responder.
+- Continuous responder GPS stream with timeout fallback/retry behavior.
+- One clean responder-to-victim separation line on Home.
+- Nearby responder notification when the responder is within 100 m.
+- Fixed 500 m / 2 km / 5 km anonymous-device controls.
+- Rich Safety Map places and Safety Compass retained.
 
-The dedicated Live Track screen still retains the full victim/responder breadcrumb history and live GPS updates timeline.
-
-## Validation
-
-Backend tests: `37 passed`.
-
-Flutter is not installed in the packaging environment, so run `flutter analyze` locally before building the APK.
+See `CHANGELOG_V1_8_6.md` and `UPGRADE_TO_V1_8_6.md` for details.
