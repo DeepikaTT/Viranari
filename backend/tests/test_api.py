@@ -744,3 +744,50 @@ def test_35_unanswered_offer_expires_and_escalates_to_next_responder(tmp_path):
         proof = c.get(f"/alerts/{alert['id']}/proof", headers=auth(owner["access_token"])).json()
         types = [e["event_type"] for e in proof["events"]]
         assert "SAFE_REACH_OFFER_EXPIRED" in types
+
+
+def test_36_phone_is_collected_and_disclosed_only_after_trusted_consent(client):
+    owner = register(client, "Asha", "asha@example.com", phone_e164="+919876543210")
+    contact = register(client, "Maya", "maya@example.com", phone_e164="+919812345678")
+    invite = client.post(
+        "/contacts/invite",
+        headers=auth(owner["access_token"]),
+        json={"email": "maya@example.com", "alias": "Sister"},
+    )
+    assert invite.status_code == 201
+    assert invite.json()["contact_phone_e164"] is None
+    accepted = client.post(
+        "/contacts/accept",
+        headers=auth(contact["access_token"]),
+        json={"invite_token": invite.json()["invite_token"]},
+    )
+    assert accepted.status_code == 200
+    contacts = client.get("/contacts", headers=auth(owner["access_token"])).json()
+    assert contacts[0]["contact_phone_e164"] == "+919812345678"
+
+
+def test_37_emergency_communication_actions_enter_signed_incident_record(client):
+    owner, _, _ = _pair(client)
+    alert = _alert(client, owner, "client-action-01").json()
+    action = client.post(
+        f"/alerts/{alert['id']}/client-actions",
+        headers=auth(owner["access_token"]),
+        json={
+            "action": "sms_fallback_prepared",
+            "metadata": {"contact_alias": "Sister", "latitude": 17.385, "longitude": 78.4867},
+        },
+    )
+    assert action.status_code == 200, action.text
+    proof = client.get(f"/alerts/{alert['id']}/proof", headers=auth(owner["access_token"])).json()
+    assert any(e["event_type"] == "SMS_FALLBACK_PREPARED" for e in proof["events"])
+    verified = client.get(f"/alerts/{alert['id']}/proof/verify", headers=auth(owner["access_token"])).json()
+    assert verified["valid"] is True
+
+
+def test_38_health_reports_resilient_commute_capabilities(client):
+    health = client.get("/health")
+    assert health.status_code == 200
+    body = health.json()
+    assert body["version"] == "1.6.0"
+    assert body["sms_fallback"] == "system-composer"
+    assert body["offline_journal"] == "sqlite"

@@ -11,6 +11,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../core/api_client.dart';
 import '../core/models.dart';
 import '../core/session.dart';
+import '../core/storage.dart';
 import '../core/theme.dart';
 import '../services/device_status_service.dart';
 import '../services/location_service.dart';
@@ -34,6 +35,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final _queue = OfflineQueueService();
   final _locationSync = LocationSyncService();
   final _connectivity = Connectivity();
+  final _contactCache = TrustedContactCacheStore();
 
   bool _busy = false;
   bool _backendOnline = false;
@@ -336,9 +338,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Future<void> _refreshContacts() async {
     try {
       final contacts = await widget.session.api.contacts();
+      await _contactCache.save(contacts);
       final active = contacts.where((c) => c.status == 'active').length;
       if (mounted) setState(() => _trustedCount = active);
-    } catch (_) {}
+    } catch (_) {
+      final cached = await _contactCache.load();
+      if (mounted) setState(() => _trustedCount = cached.length);
+    }
   }
 
   Future<void> _refreshQueue() async {
@@ -612,33 +618,129 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     await _refreshLatest();
   }
 
+  Future<List<TrustedContact>> _callableTrustedContacts() async {
+    try {
+      final contacts = await widget.session.api.contacts();
+      await _contactCache.save(contacts);
+      return contacts.where((c) => c.status == 'active' && c.phoneE164 != null && c.phoneE164!.isNotEmpty).toList();
+    } catch (_) {
+      return _contactCache.load();
+    }
+  }
+
+  Future<TrustedContact?> _chooseTrustedContact(List<TrustedContact> contacts, String title) async {
+    if (contacts.isEmpty) return null;
+    if (contacts.length == 1) return contacts.first;
+    if (!mounted) return null;
+    return showModalBottomSheet<TrustedContact>(
+      context: context,
+      useSafeArea: true,
+      showDragHandle: true,
+      builder: (context) => ListView(
+        shrinkWrap: true,
+        padding: const EdgeInsets.fromLTRB(18, 4, 18, 24),
+        children: [
+          Text(title, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 18, color: ViraColors.plum)),
+          const SizedBox(height: 10),
+          ...contacts.map(
+            (contact) => ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const CircleAvatar(child: Icon(Icons.person_outline)),
+              title: Text(contact.alias, style: const TextStyle(fontWeight: FontWeight.w800)),
+              subtitle: Text('${contact.name} · ${contact.phoneE164}'),
+              trailing: const Icon(Icons.chevron_right_rounded),
+              onTap: () => Navigator.pop(context, contact),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _recordClientAction(String action, Map<String, dynamic> metadata) async {
+    final alert = _latest;
+    if (alert == null || !_backendOnline) return;
+    try {
+      await widget.session.api.recordClientAction(alert.id, action, metadata);
+    } catch (_) {
+      // The safety action itself must not depend on logging succeeding.
+    }
+  }
+
   Future<void> _callEmergencyServices() async {
     const emergencyNumber = String.fromEnvironment('VIRANARI_EMERGENCY_NUMBER', defaultValue: '112');
     final opened = await launchUrl(Uri(scheme: 'tel', path: emergencyNumber), mode: LaunchMode.externalApplication);
-    if (!opened && mounted) {
+    if (opened) {
+      await _recordClientAction('emergency_call_opened', {'number': emergencyNumber});
+    } else if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not open the phone app.')));
     }
   }
 
   Future<void> _callTrustedContact() async {
-    try {
-      final contacts = await widget.session.api.contacts();
-      final callable = contacts.where((c) => c.status == 'active' && c.phoneE164 != null && c.phoneE164!.isNotEmpty).toList();
-      if (callable.isEmpty) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('No accepted Trusted Circle contact has a phone number yet.')),
-          );
-        }
-        return;
+    final callable = await _callableTrustedContacts();
+    if (callable.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No accepted Trusted Circle contact has a phone number. Open Circle and add/update phone numbers first.')),
+        );
       }
-      final phone = callable.first.phoneE164!;
-      final opened = await launchUrl(Uri(scheme: 'tel', path: phone), mode: LaunchMode.externalApplication);
-      if (!opened && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not open the phone app.')));
+      return;
+    }
+    final selected = await _chooseTrustedContact(callable, 'Call trusted contact');
+    if (selected == null || selected.phoneE164 == null) return;
+    final opened = await launchUrl(Uri(scheme: 'tel', path: selected.phoneE164!), mode: LaunchMode.externalApplication);
+    if (opened) {
+      await _recordClientAction('trusted_call_opened', {'contact_id': selected.id, 'contact_alias': selected.alias});
+    } else if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not open the phone app.')));
+    }
+  }
+
+  Future<void> _sendSmsFallback() async {
+    final alert = _latest;
+    if (alert == null || !alert.isActive) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Start an SOS before sending an emergency SMS update.')));
+      return;
+    }
+    final contacts = await _callableTrustedContacts();
+    if (contacts.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No trusted contact phone numbers are available. Add/update them in Circle first.')),
+        );
       }
-    } on ApiException catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+      return;
+    }
+    final selected = await _chooseTrustedContact(contacts, 'Send SMS location update');
+    if (selected == null || selected.phoneE164 == null) return;
+
+    final position = _lastPosition;
+    final latitude = position?.latitude ?? alert.latitude;
+    final longitude = position?.longitude ?? alert.longitude;
+    final accuracy = position?.accuracy ?? alert.accuracyM;
+    final captured = _lastPhoneFix ?? alert.lastGpsFixAt?.toLocal() ?? DateTime.now();
+    final trip = alert.id.length > 6 ? alert.id.substring(0, 6).toUpperCase() : alert.id.toUpperCase();
+    final message = StringBuffer()
+      ..writeln('ViraNari SOS | Trip $trip')
+      ..writeln('Location: ${latitude.toStringAsFixed(6)}, ${longitude.toStringAsFixed(6)}')
+      ..writeln('Captured: ${DateFormat('h:mm:ss a, d MMM').format(captured)}')
+      ..writeln('Accuracy: ${accuracy == null ? 'unknown' : '±${accuracy.toStringAsFixed(0)}m'} | Battery: ${_battery == null ? 'unknown' : '$_battery%'}')
+      ..writeln('Map: https://maps.google.com/?q=$latitude,$longitude')
+      ..write('Emergency is active. Please contact me or emergency services if I stop responding.');
+
+    final uri = Uri(scheme: 'sms', path: selected.phoneE164!, queryParameters: {'body': message.toString()});
+    final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (opened) {
+      await _recordClientAction('sms_fallback_prepared', {
+        'contact_id': selected.id,
+        'contact_alias': selected.alias,
+        'latitude': latitude,
+        'longitude': longitude,
+        'captured_at': captured.toUtc().toIso8601String(),
+      });
+    } else if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not open the Messages app.')));
     }
   }
 
@@ -714,7 +816,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 StatusChip(label: _network.toUpperCase(), icon: _network == 'offline' ? Icons.signal_wifi_off : Icons.network_check, good: _network != 'offline' && _network != 'unknown'),
                 StatusChip(label: batteryText, icon: Icons.battery_5_bar, good: (_battery ?? 100) > 20),
                 StatusChip(label: '$_trustedCount trusted', icon: Icons.group_outlined, good: _trustedCount > 0),
-                StatusChip(label: _pending == 0 ? 'Queue clear' : '$_pending queued', icon: _pending == 0 ? Icons.cloud_done_outlined : Icons.cloud_off_outlined, good: _pending == 0),
+                StatusChip(label: _pending == 0 ? 'SOS queue clear' : '$_pending SOS queued', icon: _pending == 0 ? Icons.cloud_done_outlined : Icons.cloud_off_outlined, good: _pending == 0),
+                StatusChip(label: _queuedLocations == 0 ? 'GPS journal synced' : '$_queuedLocations GPS queued', icon: _queuedLocations == 0 ? Icons.route_outlined : Icons.save_alt_rounded, good: _queuedLocations == 0),
               ],
             ),
           ),
@@ -728,7 +831,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   child: FilledButton.tonalIcon(
                     onPressed: _showSafeReach,
                     icon: const Icon(Icons.verified_user_rounded),
-                    label: Text(_latest?.safeReach == null ? 'SafeReach' : _latest!.safeReach!.statusLabel),
+                    label: Text(_latest?.safeReach == null ? 'Verified help' : _latest!.safeReach!.statusLabel),
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -781,22 +884,33 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-              color: ViraColors.surface,
+              color: active && !_backendOnline ? const Color(0xFFFFF1D9) : ViraColors.surface,
               borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: ViraColors.lilacStrong),
+              border: Border.all(color: active && !_backendOnline ? ViraColors.warning : ViraColors.lilacStrong),
             ),
-            child: const Row(
+            child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(Icons.sms_outlined, color: ViraColors.plum),
-                SizedBox(width: 12),
+                const Icon(Icons.sms_outlined, color: ViraColors.plum),
+                const SizedBox(width: 12),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('SMS fallback — coming next', style: TextStyle(fontWeight: FontWeight.w900, color: ViraColors.plum)),
-                      SizedBox(height: 3),
-                      Text('Placeholder only in this build. No SMS permission is requested and no message is sent yet.', style: TextStyle(color: ViraColors.mutedPlum, height: 1.35)),
+                      const Text('SMS fallback', style: TextStyle(fontWeight: FontWeight.w900, color: ViraColors.plum)),
+                      const SizedBox(height: 3),
+                      const Text(
+                        'Works without mobile data when cellular SMS is available. ViraNari prepares your latest GPS, timestamp, accuracy and battery in the phone\'s Messages app; you confirm Send.',
+                        style: TextStyle(color: ViraColors.mutedPlum, height: 1.35),
+                      ),
+                      if (active) ...[
+                        const SizedBox(height: 10),
+                        FilledButton.tonalIcon(
+                          onPressed: _sendSmsFallback,
+                          icon: const Icon(Icons.send_to_mobile_rounded),
+                          label: Text(_backendOnline ? 'Prepare SMS update' : 'Internet down — send SMS update'),
+                        ),
+                      ],
                     ],
                   ),
                 ),

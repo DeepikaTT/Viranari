@@ -1,26 +1,18 @@
-# ViraNari V1.5.0 Customer Acceptance Checklist
+# ViraNari V1.6.0 Customer Acceptance Checklist
 
-Use physical phones for acceptance testing.
-
-- [ ] Existing V1.4.4 account can log in after backend upgrade.
-- [ ] Existing Trusted Circle remains present.
-- [ ] Existing History remains readable.
-- [ ] Hold SOS creates an active emergency.
-- [ ] Sender location changes while walking/driving outdoors.
-- [ ] Receiver Inbox refreshes latest coordinates.
-- [ ] Location timeline shows every stored record, not only the latest one.
-- [ ] Screen-lock/background test continues tracking on supported Android settings.
-- [ ] Wi-Fi → mobile-data transition recovers without ending SOS.
-- [ ] Temporary internet loss queues/replays location records.
-- [ ] Trusted Contact acknowledgement reaches sender.
-- [ ] Call Trusted opens the system dialer with the accepted contact number.
-- [ ] Call Emergency opens the configured emergency number.
-- [ ] Verified responder is matched only when available, recent and within radius.
-- [ ] Unverified account cannot open responder APIs.
-- [ ] Responder can accept → arrive → complete.
-- [ ] Unanswered responder offer expires and the next eligible responder is tried automatically.
-- [ ] Traveler/Trusted Contact sees responder status.
-- [ ] ProofChain Verify reports valid on an untouched incident.
-- [ ] Backend tamper test causes ProofChain verification failure.
-- [ ] Test Drill remains clearly labelled as TEST.
-- [ ] SMS permission is NOT requested in V1.5.0.
+- [ ] V1.4.4 Home/Circle/Inbox/History experience remains recognizable.
+- [ ] Trusted Circle and consent flow still work.
+- [ ] New registration collects a valid international-format mobile number.
+- [ ] Existing users can add/edit their number from Circle.
+- [ ] Trusted contact numbers are visible only after acceptance.
+- [ ] Call trusted opens the selected contact in the system dialer.
+- [ ] Emergency services opens the configured emergency number in the system dialer.
+- [ ] SMS fallback opens the normal Messages app with current emergency information prefilled.
+- [ ] No Android SEND_SMS permission is requested.
+- [ ] Trusted phone numbers remain available from encrypted cache during an API outage after at least one successful Circle sync.
+- [ ] Live-location timeline still shows all server-stored records.
+- [ ] Offline GPS journal uses SQLite and does not stop after 120 points.
+- [ ] Reconnect replay preserves original timestamps.
+- [ ] Verified Help does not block SOS/Trusted Circle when no responder is available.
+- [ ] Incident record shows human-readable actions and cryptographic verification.
+- [ ] Incident record does not falsely label an opened dialer as a completed call or a prepared SMS as delivered.

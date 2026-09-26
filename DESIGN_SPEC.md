@@ -1,29 +1,20 @@
-# ViraNari V1.5.0 Product Design Spec
+# ViraNari V1.6.0 Product Design Spec
 
-## Product principle
-Emergency response should fail gracefully, disclose freshness honestly and never expose a distressed user to unverified nearby strangers.
+## Product priority
+The emergency path is ordered by immediate user value:
 
-## Locked V1.4.4 UX
-- Bottom navigation: Home / Circle / Inbox / History.
-- Large hold-for-help SOS.
-- Rich emergency cards, visible coordinates, external Open Map.
-- Full location timeline rather than a dedicated always-on map tab.
+1. Start SOS without typing.
+2. Keep recording location locally regardless of internet state.
+3. Notify and track through Trusted Circle when data is available.
+4. Offer direct phone-call actions using consented phone numbers.
+5. Offer SMS fallback when mobile data is unavailable but cellular SMS exists.
+6. Offer Verified Help only where an approved responder network exists.
+7. Preserve a human-readable, cryptographically verifiable incident record after and during the emergency.
 
-## SafeReach
-- Automatic nearest eligible verified-responder routing on SOS.
-- Responder identity shown as organization + responder name + category + approximate match distance.
-- States: REQUEST SENT → RESPONDER COMING → RESPONDER ARRIVED → COMPLETED.
-- User-controlled rematch while an offered responder has not accepted.
-
-## ProofChain
-- Integrity card should be understandable first: Verified / Needs attention.
-- Technical detail remains inspectable: event count, SHA-256 chain state, Ed25519 signature state, public key ID and recent signed actions.
-
-## Calls
-- Calls always go through the system phone UI; ViraNari does not silently place phone calls.
-- Active SOS surfaces Trusted Circle, emergency-service and matched-responder call actions.
-
-## Privacy
-- No public nearby-user radar.
-- Only the assigned verified responder receives the incident location through responder-authorized APIs.
-- Trusted Contact phone numbers remain consent-based as in V1.4.4.
+## UX rules
+- Do not hide last-known location when connectivity is lost.
+- Distinguish device liveness, GPS freshness and server synchronization.
+- Never call a prepared SMS "sent" or a dialer-open event "connected".
+- Verified Help is optional infrastructure, not a prerequisite for SOS.
+- Cryptographic details are secondary to a readable incident timeline.
+- Existing V1.4.4 location timeline and external Open Map flow stay intact.

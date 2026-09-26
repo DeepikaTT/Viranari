@@ -16,6 +16,7 @@ class _AuthScreenState extends State<AuthScreen> {
   final _name = TextEditingController();
   final _email = TextEditingController();
   final _password = TextEditingController();
+  final _phone = TextEditingController(text: '+91');
   bool _register = false;
   bool _busy = false;
   String? _error;
@@ -25,12 +26,17 @@ class _AuthScreenState extends State<AuthScreen> {
     _name.dispose();
     _email.dispose();
     _password.dispose();
+    _phone.dispose();
     super.dispose();
   }
 
   Future<void> _submit() async {
-    if (_email.text.trim().isEmpty || _password.text.length < 8 || (_register && _name.text.trim().length < 2)) {
-      setState(() => _error = 'Enter a valid email, name, and password of at least 8 characters.');
+    final phone = _phone.text.trim();
+    final phoneValid = RegExp(r'^\+[1-9][0-9]{7,14}$').hasMatch(phone);
+    if (_email.text.trim().isEmpty || _password.text.length < 8 || (_register && (_name.text.trim().length < 2 || !phoneValid))) {
+      setState(() => _error = _register
+          ? 'Enter a valid name, email, phone number with country code (example +919876543210), and password of at least 8 characters.'
+          : 'Enter a valid email and password of at least 8 characters.');
       return;
     }
     setState(() {
@@ -39,7 +45,7 @@ class _AuthScreenState extends State<AuthScreen> {
     });
     try {
       if (_register) {
-        await widget.session.register(_name.text.trim(), _email.text.trim(), _password.text);
+        await widget.session.register(_name.text.trim(), _email.text.trim(), _password.text, phoneE164: phone);
       } else {
         await widget.session.login(_email.text.trim(), _password.text);
       }
@@ -80,6 +86,18 @@ class _AuthScreenState extends State<AuthScreen> {
                   const SizedBox(height: 28),
                   if (_register) ...[
                     TextField(controller: _name, textInputAction: TextInputAction.next, decoration: const InputDecoration(labelText: 'Name', prefixIcon: Icon(Icons.person_outline))),
+                    const SizedBox(height: 14),
+                    TextField(
+                      controller: _phone,
+                      keyboardType: TextInputType.phone,
+                      textInputAction: TextInputAction.next,
+                      decoration: const InputDecoration(
+                        labelText: 'Mobile number',
+                        hintText: '+919876543210',
+                        helperText: 'Used only for trusted-circle calls and emergency SMS fallback.',
+                        prefixIcon: Icon(Icons.phone_outlined),
+                      ),
+                    ),
                     const SizedBox(height: 14),
                   ],
                   TextField(controller: _email, keyboardType: TextInputType.emailAddress, textInputAction: TextInputAction.next, decoration: const InputDecoration(labelText: 'Email', prefixIcon: Icon(Icons.alternate_email))),

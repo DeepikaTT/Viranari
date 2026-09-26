@@ -235,8 +235,8 @@ class _InboxScreenState extends State<InboxScreen> {
                           icon: Icon(item.safeReach == null ? Icons.verified_user_outlined : Icons.verified_user_rounded),
                           label: Text(
                             item.safeReach == null
-                                ? 'SafeReach · verified emergency help'
-                                : 'SafeReach · ${item.safeReach!.statusLabel}',
+                                ? 'Verified help · optional responder network'
+                                : 'Verified help · ${item.safeReach!.statusLabel}',
                           ),
                         ),
                       ),

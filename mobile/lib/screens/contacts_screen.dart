@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../core/api_client.dart';
 import '../core/models.dart';
 import '../core/session.dart';
+import '../core/storage.dart';
 import '../core/theme.dart';
 
 class ContactsScreen extends StatefulWidget {
@@ -18,6 +19,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
   List<TrustedContact> _contacts = const [];
   bool _loading = true;
   String? _error;
+  final _contactCache = TrustedContactCacheStore();
 
   @override
   void initState() {
@@ -32,11 +34,56 @@ class _ContactsScreenState extends State<ContactsScreen> {
     });
     try {
       final contacts = await widget.session.api.contacts();
+      await _contactCache.save(contacts);
       if (mounted) setState(() => _contacts = contacts);
     } on ApiException catch (e) {
       if (mounted) setState(() => _error = e.message);
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+
+  Future<void> _editMyPhone() async {
+    final controller = TextEditingController(text: widget.session.user?.phoneE164 ?? '+91');
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Your emergency phone number'),
+        content: TextField(
+          controller: controller,
+          keyboardType: TextInputType.phone,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Mobile number with country code',
+            hintText: '+919876543210',
+            helperText: 'Trusted contacts can call or prepare an emergency SMS to this number after you accept each other.',
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Save')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final phone = controller.text.trim();
+    if (!RegExp(r'^\+[1-9][0-9]{7,14}$').hasMatch(phone)) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Use international format, for example +919876543210.')),
+        );
+      }
+      return;
+    }
+    try {
+      await widget.session.updatePhone(phone);
+      await _load();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Emergency phone number updated.')));
+      }
+    } on ApiException catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
     }
   }
 
@@ -112,6 +159,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
     if (ok != true || code.text.trim().isEmpty) return;
     try {
       await widget.session.api.acceptInvite(code.text.trim());
+      await _load();
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('You are now an active trusted contact.')));
     } on ApiException catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
@@ -144,8 +192,43 @@ class _ContactsScreenState extends State<ContactsScreen> {
         children: [
           Text('Trusted Circle', style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w900, color: ViraColors.plum)),
           const SizedBox(height: 6),
-          const Text('Every contact must opt in before they can receive your SOS.', style: TextStyle(color: ViraColors.mutedPlum)),
-          const SizedBox(height: 18),
+          const Text('Every contact must opt in before they can receive your SOS. Phone numbers are revealed only after consent.', style: TextStyle(color: ViraColors.mutedPlum)),
+          const SizedBox(height: 14),
+
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: ViraColors.lilacStrong),
+            ),
+            child: Row(
+              children: [
+                const CircleAvatar(
+                  backgroundColor: ViraColors.lilac,
+                  child: Icon(Icons.phone_in_talk_outlined, color: ViraColors.plum),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Your emergency phone', style: TextStyle(fontWeight: FontWeight.w900)),
+                      Text(
+                        widget.session.user?.phoneE164 ?? 'Not set — calling and SMS fallback cannot work',
+                        style: TextStyle(
+                          color: widget.session.user?.phoneE164 == null ? ViraColors.pinkDark : ViraColors.mutedPlum,
+                          fontWeight: widget.session.user?.phoneE164 == null ? FontWeight.w800 : FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                TextButton(onPressed: _editMyPhone, child: Text(widget.session.user?.phoneE164 == null ? 'Add' : 'Edit')),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
           Row(
             children: [
               Expanded(child: FilledButton.icon(onPressed: _invite, icon: const Icon(Icons.person_add_alt_1), label: const Text('Invite'))),
@@ -189,6 +272,8 @@ class _ContactsScreenState extends State<ContactsScreen> {
                           children: [
                             Text(c.alias, style: const TextStyle(fontWeight: FontWeight.w900)),
                             Text('${c.name} · ${c.email}', style: const TextStyle(color: ViraColors.mutedPlum)),
+                            if (c.status == 'active')
+                              Text(c.phoneE164 ?? 'Phone number not set', style: TextStyle(color: c.phoneE164 == null ? ViraColors.pinkDark : ViraColors.mutedPlum, fontSize: 12, fontWeight: c.phoneE164 == null ? FontWeight.w800 : FontWeight.w500)),
                             Text(c.status.toUpperCase(), style: TextStyle(fontSize: 11, fontWeight: FontWeight.w900, color: c.status == 'active' ? ViraColors.success : ViraColors.warning)),
                           ],
                         ),

@@ -233,6 +233,9 @@ class ApiClient {
 
   Future<void> acknowledge(String alertId) async => _post('/alerts/$alertId/acknowledge', const {});
 
+  Future<void> recordClientAction(String alertId, String action, Map<String, dynamic> metadata) async =>
+      _post('/alerts/$alertId/client-actions', {'action': action, 'metadata': metadata});
+
   Future<ProofChain> proofChain(String alertId) async =>
       ProofChain.fromJson(await _get('/alerts/$alertId/proof') as Map<String, dynamic>);
 

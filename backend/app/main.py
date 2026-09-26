@@ -45,6 +45,7 @@ from .schemas import (
     ContactAcceptIn,
     ContactCreateIn,
     ContactOut,
+    ClientActionIn,
     InboxAlertOut,
     LoginIn,
     MessageOut,
@@ -101,10 +102,10 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
 
     app = FastAPI(
         title="ViraNari API",
-        version="1.5.0",
+        version="1.6.0",
         description=(
             "ViraNari emergency-response API preserving V1.4.4 live tracking and timeline, "
-            "with SafeReach verified responder routing and Ed25519-signed ProofChain incident logs."
+            "with verified responder routing, SMS fallback support, durable offline journaling, and Ed25519-signed incident logs."
         ),
     )
     app.state.engine = engine
@@ -403,7 +404,7 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "service": "viranari-api", "version": "1.5.0", "safe_reach": True, "proofchain": "ed25519-sha256"}
+        return {"status": "ok", "service": "viranari-api", "version": "1.6.0", "safe_reach": True, "proofchain": "ed25519-sha256", "sms_fallback": "system-composer", "offline_journal": "sqlite"}
 
     @app.post("/auth/register", response_model=TokenOut, status_code=201)
     def register(payload: RegisterIn, db: Session = Depends(get_db)):
@@ -965,6 +966,33 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
         )
         db.commit()
         return MessageOut(message="Alert acknowledged")
+
+    @app.post("/alerts/{alert_id}/client-actions", response_model=MessageOut)
+    def record_client_action(
+        alert_id: str,
+        payload: ClientActionIn,
+        current: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ):
+        alert = db.scalar(alert_query().where(Alert.id == alert_id))
+        if not alert or alert.owner_id != current.id:
+            raise HTTPException(status_code=404, detail="Alert not found")
+        event_type = {
+            "sms_fallback_prepared": "SMS_FALLBACK_PREPARED",
+            "trusted_call_opened": "TRUSTED_CALL_DIALER_OPENED",
+            "emergency_call_opened": "EMERGENCY_CALL_DIALER_OPENED",
+        }[payload.action]
+        append_incident_event(
+            db,
+            alert_id=alert.id,
+            event_type=event_type,
+            actor_type="traveler",
+            actor_user_id=current.id,
+            payload=payload.metadata,
+        )
+        audit(db, payload.action, current.id, alert.id, "Client emergency communication action prepared/opened")
+        db.commit()
+        return MessageOut(message="Incident action recorded")
 
     @app.get("/proof/public-key", response_model=ProofPublicKeyOut)
     def proof_public_key():

@@ -53,4 +53,4 @@ if plist.exists():
         text = text.replace('</dict>', ''.join(additions) + '</dict>', 1)
         plist.write_text(text)
 
-print('Mobile platform files patched for ViraNari v1.5.0 SafeReach + V1.4.4 Core Restore.')
+print('Mobile platform files patched for ViraNari v1.6.0 Resilient Commute + V1.4.4 Core Restore.')

@@ -93,14 +93,30 @@ class _SafeReachSheetState extends State<SafeReachSheet> {
     }
   }
 
-  String _eventLabel(String raw) => raw
-      .replaceAll('SAFE_REACH_', '')
-      .replaceAll('_', ' ')
-      .toLowerCase()
-      .split(' ')
-      .where((e) => e.isNotEmpty)
-      .map((e) => '${e[0].toUpperCase()}${e.substring(1)}')
-      .join(' ');
+  String _eventLabel(String raw) {
+    const labels = <String, String>{
+      'SOS_CREATED': 'SOS started',
+      'SOS_CREATED_TEST': 'Practice SOS started',
+      'TRUSTED_CIRCLE_NOTIFIED': 'Trusted Circle notified',
+      'TRUSTED_CONTACT_DELIVERY_CONFIRMED': 'Trusted contact received alert',
+      'TRUSTED_CONTACT_ACKNOWLEDGED': 'Trusted contact acknowledged',
+      'LOCATION_FIX_STORED': 'Location captured',
+      'OFFLINE_LOCATION_BATCH_REPLAYED': 'Offline location trail recovered',
+      'SAFE_REACH_RESPONDER_MATCHED': 'Verified responder matched',
+      'SAFE_REACH_NO_RESPONDER': 'No verified responder available',
+      'SAFE_REACH_OFFER_EXPIRED': 'Responder offer expired',
+      'SAFE_REACH_ACCEPTED': 'Responder accepted',
+      'SAFE_REACH_DECLINED': 'Responder declined',
+      'SAFE_REACH_ARRIVED': 'Responder arrived',
+      'SAFE_REACH_COMPLETED': 'Responder completed response',
+      'SMS_FALLBACK_PREPARED': 'SMS fallback prepared',
+      'TRUSTED_CALL_DIALER_OPENED': 'Trusted-contact call opened',
+      'EMERGENCY_CALL_DIALER_OPENED': 'Emergency-services call opened',
+      'SOS_RESOLVED': 'Emergency marked safe',
+      'SOS_CANCELLED': 'False alarm cancelled',
+    };
+    return labels[raw] ?? raw.replaceAll('_', ' ').toLowerCase().split(' ').where((e) => e.isNotEmpty).map((e) => '${e[0].toUpperCase()}${e.substring(1)}').join(' ');
+  }
 
   Color _stateColor(String state) {
     switch (state) {
@@ -137,7 +153,7 @@ class _SafeReachSheetState extends State<SafeReachSheet> {
             Row(
               children: [
                 const Expanded(
-                  child: Text('SafeReach', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900, color: ViraColors.plum)),
+                  child: Text('Emergency Help & Incident Record', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900, color: ViraColors.plum)),
                 ),
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -155,14 +171,14 @@ class _SafeReachSheetState extends State<SafeReachSheet> {
             ),
             const SizedBox(height: 5),
             const Text(
-              'Nearest verified responder routing with a cryptographically verifiable incident record.',
+              'Trusted Circle, verified responder routing when available, and a signed record of what ViraNari actually did during the incident.',
               style: TextStyle(color: ViraColors.mutedPlum, height: 1.35),
             ),
             const SizedBox(height: 18),
             if (_loading && alert == null)
               const Center(child: Padding(padding: EdgeInsets.all(28), child: CircularProgressIndicator()))
             else if (_error != null)
-              _MessageCard(icon: Icons.cloud_off_outlined, title: 'SafeReach unavailable', body: _error!)
+              _MessageCard(icon: Icons.cloud_off_outlined, title: 'Incident record unavailable', body: _error!)
             else if (assignment == null)
               Container(
                 padding: const EdgeInsets.all(18),
@@ -179,7 +195,7 @@ class _SafeReachSheetState extends State<SafeReachSheet> {
                     ),
                     const SizedBox(height: 7),
                     const Text(
-                      'Trusted Circle and live location remain active. SafeReach only routes to responders that are verified, available, recently online and within their service radius.',
+                      'Verified Help is optional. It only works where an approved responder network (for example campus security or a partner clinic) is enrolled. Your Trusted Circle, calls, SMS fallback and location trail continue without it.',
                       style: TextStyle(color: ViraColors.mutedPlum, height: 1.4),
                     ),
                     if (widget.canRematch && alert?.isActive == true) ...[
@@ -259,7 +275,7 @@ class _SafeReachSheetState extends State<SafeReachSheet> {
                       const SizedBox(width: 9),
                       Expanded(
                         child: Text(
-                          verification?.valid == true ? 'ProofChain integrity verified' : 'ProofChain verification needs attention',
+                          verification?.valid == true ? 'Incident record integrity verified' : 'Incident record verification needs attention',
                           style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
                         ),
                       ),
@@ -280,7 +296,7 @@ class _SafeReachSheetState extends State<SafeReachSheet> {
               ),
             ),
             const SizedBox(height: 18),
-            const Text('Incident actions', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 17, color: ViraColors.plum)),
+            const Text('Incident timeline', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 17, color: ViraColors.plum)),
             const SizedBox(height: 8),
             if (recentEvents.isEmpty)
               const Text('No signed actions yet.', style: TextStyle(color: ViraColors.mutedPlum))

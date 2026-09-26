@@ -1,140 +1,84 @@
-# ViraNari V1.5.0 — SafeReach + ProofChain
+# ViraNari V1.6.0 — Resilient Commute
 
-V1.5.0 is an additive release built directly on the V1.4.4 product surface. It keeps the V2-style UI, V4 reliable location engine, Trusted Circle, Emergency Inbox, History, offline retry, visible coordinates, external Open Map flow, and the expanded live location timeline.
+V1.6.0 keeps the V1.4.4 product surface and V4 live-tracking engine, then makes the emergency communication flow more useful in the real world.
 
-## What stays locked from V1.4.4
+## Preserved from V1.4.4 / V1.5.0
 
-- Home / Circle / Inbox / History navigation.
-- Press-and-hold SOS.
-- Continuous emergency location tracking using the V1.4 engine.
-- `distanceFilter: 0`, Android `bestForNavigation`, requested ~5-second updates.
-- Separate device heartbeat, GPS freshness and server-sync state.
-- Forced GPS recovery and stream restart.
-- Offline location queue + reconnect replay with original timestamps.
-- Trusted Circle consent, delivery state and acknowledgement.
-- GPS coordinates visible directly in emergency cards.
-- `Open map` launches the latest point in the installed map app.
-- **Live location timeline** shows every stored location record, newest first, and refreshes every 5 seconds.
-- SMS remains a placeholder only in this release; no SMS permission is requested.
-- No Nearby/Safety Presence and no Journey Guard.
+- V2-style Home / Circle / Inbox / History UI.
+- Hold-to-activate SOS and practice mode.
+- Trusted Circle consent and acknowledgement.
+- V4 continuous emergency tracking (`distanceFilter: 0`, best-for-navigation, requested ~5-second Android interval).
+- Device heartbeat separated from GPS freshness.
+- Forced GPS refresh, reconnect handling, visible coordinates and external Open Map.
+- Full live-location timeline with every server-stored point.
+- SafeReach verified responder backend and responder console.
+- Ed25519 + SHA-256 tamper-evident incident record.
+- No Nearby/Presence and no Journey Guard.
 
-## New: SafeReach verified emergency help
+## Fixed: phone-number onboarding
 
-When an SOS reaches the backend, SafeReach can automatically route it to the nearest responder who is:
+V1.5 had call buttons but registration did not collect a phone number. V1.6 fixes that gap.
 
-1. admin-verified,
-2. marked available,
-3. recently online,
-4. inside the responder's configured service radius.
+- New accounts must enter a mobile number in E.164 format, e.g. `+919876543210`.
+- Existing accounts can add or edit their own emergency phone number from **Circle**.
+- A trusted contact's number is revealed only after the invitation has been accepted.
+- Active contacts show whether a usable phone number is available.
+- **Call trusted** now lets the traveler choose among multiple callable trusted contacts instead of silently choosing the first one.
 
-The responder can accept, mark arrival and complete the response. Unanswered offers expire after the configured timeout and SafeReach escalates to the next eligible verified responder. The traveler and Trusted Circle can see the responder organization, category, approximate match distance and current response state.
+## New: practical SMS fallback without SEND_SMS permission
 
-V1.5.0 deliberately does **not** expose SOS incidents to random nearby users.
+During an active SOS, **SMS fallback** opens the phone's normal Messages app with a trusted contact and an emergency message pre-filled. The message contains:
 
-## New: ProofChain cryptographic incident record
+- trip/incident ID,
+- latest latitude and longitude,
+- capture time,
+- GPS accuracy,
+- battery level,
+- a map link,
+- an emergency instruction.
 
-Important incident actions are stored in a per-emergency SHA-256 hash chain and signed by a persistent Ed25519 backend key. Changing a historical event breaks verification.
+This can work with mobile data turned off as long as normal cellular SMS service exists. ViraNari does **not** claim the message was sent: the user confirms Send in the system Messages app. This avoids Android `SEND_SMS` permission and Google Play SMS-role restrictions.
 
-Signed actions include:
+Trusted phone numbers are cached in encrypted device storage after a successful Circle sync, so Call/SMS fallback can still find them when the API becomes unreachable.
 
-- SOS creation / test drill creation,
-- Trusted Circle notification,
-- first delivery confirmation,
-- Trusted Circle acknowledgement,
-- SafeReach responder match / no-match,
-- responder accept / arrive / complete / decline,
-- live location fixes,
-- offline location batch replay,
-- SOS resolution / cancellation.
+## New: durable multi-day offline GPS journal
 
-This is **tamper-evident**, not a claim that the database is physically impossible to alter.
+V1.5's emergency location queue was capped at 120 points. At a five-second cadence that was only about ten minutes.
 
-Endpoints:
+V1.6 moves queued emergency GPS points into a local SQLite journal and retains up to 100,000 records, roughly 5.8 days at a strict five-second cadence. When connectivity returns, existing batched replay uploads the original timestamps.
 
-- `GET /proof/public-key`
-- `GET /alerts/{alert_id}/proof`
-- `GET /alerts/{alert_id}/proof/verify`
+The home status panel now shows how many GPS points are waiting to sync.
 
-The mobile SafeReach sheet displays integrity state, signed event count, key ID and recent incident actions.
+## SafeReach is now positioned correctly
 
-## Calling restored
+SafeReach is retained as **Verified Help**, but it is not presented as a replacement for Trusted Circle, calling or SMS. It is useful only where an approved responder network such as campus security, hostel security, a clinic or another partner organization is actually enrolled and online.
 
-During an active SOS the sender now has one-tap actions to:
+If no responder is available, Trusted Circle, location tracking, call actions and SMS fallback continue normally.
 
-- open the system dialer for the first accepted Trusted Circle contact with a phone number,
-- open the system dialer for emergency services,
-- call the matched SafeReach responder when a phone number is available.
+## Incident Record instead of technical ProofChain-first UX
 
-Trusted contacts can also call the sender directly from Emergency Inbox.
+History now exposes **Incident record**. The sheet still cryptographically verifies the signed hash-chain, but the primary view is a human-readable incident timeline such as:
 
-The default emergency number is `112`; override it at build/run time:
+- SOS started
+- Trusted Circle notified
+- location captured
+- trusted contact acknowledged
+- SMS fallback prepared
+- trusted-contact call opened
+- verified responder matched / accepted / arrived
+- offline route recovered
+- emergency resolved
 
-```fish
---dart-define=VIRANARI_EMERGENCY_NUMBER=112
-```
+The cryptographic integrity result remains visible underneath. V1.6 also records SMS-composer preparation and dialer-open actions on the signed incident record when the backend is reachable. These events deliberately say `PREPARED`/`DIALER_OPENED`; they do not falsely claim an SMS was delivered or a call connected.
 
-## Verified responder setup
+## Backend tests
 
-Responders first create a normal ViraNari account. An administrator then verifies that account using the server-side admin key.
+`38 passed` in the package-generation environment.
 
-Add to `backend/.env`:
-
-```dotenv
-VIRANARI_ADMIN_KEY=replace-with-a-long-random-admin-key
-VIRANARI_PROOF_KEY_PATH=./data/.proof_ed25519.pem
-VIRANARI_RESPONDER_LOCATION_TTL_MINUTES=30
-VIRANARI_RESPONDER_OFFER_TIMEOUT_SECONDS=60
-```
-
-Example verification:
-
-```bash
-curl -X POST https://YOUR_API_DOMAIN/admin/responders/verify \
-  -H 'Content-Type: application/json' \
-  -H 'X-ViraNari-Admin-Key: YOUR_ADMIN_KEY' \
-  -d '{
-    "user_email":"security@example.com",
-    "organization_name":"Campus Security Gate 2",
-    "category":"campus_security",
-    "service_radius_m":5000,
-    "latitude":17.385,
-    "longitude":78.4867,
-    "is_available":true
-  }'
-```
-
-After verification, sign out and sign back in on the responder phone so the refreshed account role enables **Responder console** in the app menu.
-
-## Upgrade existing VPS without losing data
-
-Preserve these before replacing source:
-
-- `backend/.env`
-- `backend/data/viranari.db`
-- your virtual environment if desired
-
-V1.5.0 performs an idempotent compatibility migration that adds the user role column; the responder, assignment and ProofChain tables are created automatically. Existing V1.4.4 alerts and location history remain intact.
-
-```bash
-cd /root/Viranari/backend
-source venv/bin/activate   # or .venv/bin/activate
-pip install -r requirements.txt
-python run.py
-```
-
-Verify:
-
-```bash
-curl http://127.0.0.1:3000/health
-```
-
-Expected version: `1.5.0`.
-
-## Prepare mobile wrapper
-
-From the repository root:
+## Prepare mobile
 
 ```fish
+cd ~/Projects/Viranari
 ./scripts/prepare_mobile.fish
 cd mobile
 flutter clean
@@ -143,9 +87,7 @@ flutter pub get
 flutter analyze
 ```
 
-`prepare_mobile.fish` now also deletes Flutter's default `test/widget_test.dart`, so the old `MyApp` smoke-test error should not reappear.
-
-Run against the VPS:
+Then run:
 
 ```fish
 flutter run \
@@ -153,29 +95,22 @@ flutter run \
   --dart-define=VIRANARI_EMERGENCY_NUMBER=112
 ```
 
-Build release APK:
+## VPS upgrade
 
-```fish
-flutter build apk --release \
-  --dart-define=VIRANARI_API_BASE=https://YOUR_API_DOMAIN \
-  --dart-define=VIRANARI_EMERGENCY_NUMBER=112
+Preserve:
+
+- `backend/.env`
+- `backend/data/viranari.db`
+- `backend/data/.proof_ed25519.pem`
+
+Then install the new requirements and restart the backend.
+
+```bash
+cd /root/Viranari/backend
+source venv/bin/activate
+pip install -r requirements.txt
+pm2 restart viranari --update-env
+curl http://127.0.0.1:3000/health
 ```
 
-## Demo flow
-
-1. Traveler + Trusted Contact + Responder each register.
-2. Admin verifies the responder account.
-3. Responder opens **Responder console**, turns availability on and refreshes current location.
-4. Traveler holds SOS.
-5. Trusted Contact sees Emergency Inbox + live location timeline.
-6. SafeReach automatically selects the nearest eligible verified responder.
-7. Responder accepts, then marks arrival.
-8. Traveler and Trusted Contact open **SafeReach** and see responder status.
-9. Open the ProofChain section: integrity should show **verified**.
-10. Continue moving: the old V1.4.4 location timeline continues collecting records.
-
-## Validation performed in packaging environment
-
-Backend tests: **35 passed**.
-
-The packaging environment does not contain Flutter, so Android compilation and `flutter analyze` must still be run on your Arch/CachyOS development machine before treating the APK as release-ready.
+Expected health version: `1.6.0`.

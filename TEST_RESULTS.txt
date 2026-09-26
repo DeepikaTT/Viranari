@@ -1,30 +1,12 @@
-ViraNari V1.5.0 packaging validation
-====================================
+ViraNari V1.6.0 validation
 
-Backend pytest: 35 passed
-- Existing V1.4.4 API regression tests preserved.
-- SafeReach auto-matching test passed.
-- Responder accept/arrive state tests passed.
-- Responder authorization/admin verification tests passed.
-- ProofChain verification test passed.
-- Deliberate database tamper detection test passed.
+Backend pytest: 38 passed
 
-Manual backend integration smoke test:
-- Traveler SOS matched a nearby verified responder.
-- Responder accepted assignment.
-- Proof export independently verified using backend/tools/verify_proof_export.py.
-- External verifier result: VALID.
+Validated backend additions:
+- existing V1.4.4/V1.5.0 API regression suite
+- trusted-contact phone consent behavior
+- client emergency communication events in signed incident record
+- ProofChain remains valid after SMS/call preparation events
+- health advertises V1.6.0 SMS fallback and SQLite offline journal
 
-Mobile source validation in packaging environment:
-- All local Dart imports resolve to existing files.
-- Basic delimiter/source-tree consistency checks passed.
-- Flutter SDK is not installed in the packaging environment, therefore flutter analyze / Android APK compilation were NOT claimed here.
-
-Required on developer machine before release:
-  ./scripts/prepare_mobile.fish
-  cd mobile
-  flutter clean
-  rm -rf .dart_tool build
-  flutter pub get
-  flutter analyze
-  flutter build apk --release --dart-define=VIRANARI_API_BASE=https://YOUR_API_DOMAIN --dart-define=VIRANARI_EMERGENCY_NUMBER=112
+Mobile Flutter compilation was not executed in the package-generation environment because Flutter is not installed there. Run flutter analyze/build on the development machine before release.

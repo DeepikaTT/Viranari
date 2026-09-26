@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 from pydantic import BaseModel, EmailStr, Field
 
 PHONE_PATTERN = r"^\+[1-9][0-9]{7,14}$"
@@ -57,6 +58,12 @@ class ContactOut(BaseModel):
     invite_expires_at: datetime
     accepted_at: datetime | None = None
 
+
+
+
+class ClientActionIn(BaseModel):
+    action: Literal["sms_fallback_prepared", "trusted_call_opened", "emergency_call_opened"]
+    metadata: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
 
 class AlertCreateIn(BaseModel):
     idempotency_key: str = Field(min_length=8, max_length=100)

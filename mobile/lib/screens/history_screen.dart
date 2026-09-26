@@ -107,13 +107,13 @@ class _HistoryScreenState extends State<HistoryScreen> {
                             Text('${a.acknowledgedCount}/${a.recipients.length} acknowledged · last update ${DateFormat('h:mm:ss a').format(a.updatedAt.toLocal())}', style: const TextStyle(color: ViraColors.mutedPlum, fontSize: 12)),
                             if (a.safeReach != null) ...[
                               const SizedBox(height: 4),
-                              Text('SafeReach · ${a.safeReach!.organizationName} · ${a.safeReach!.statusLabel}', style: const TextStyle(color: ViraColors.success, fontSize: 12, fontWeight: FontWeight.w800)),
+                              Text('Verified help · ${a.safeReach!.organizationName} · ${a.safeReach!.statusLabel}', style: const TextStyle(color: ViraColors.success, fontSize: 12, fontWeight: FontWeight.w800)),
                             ],
                             const SizedBox(height: 8),
                             OutlinedButton.icon(
                               onPressed: () => _showIncident(a),
                               icon: const Icon(Icons.verified_user_outlined, size: 18),
-                              label: const Text('Incident proof & responder'),
+                              label: const Text('Incident record'),
                             ),
                           ],
                         ),
