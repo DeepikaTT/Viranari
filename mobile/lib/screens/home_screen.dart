@@ -62,6 +62,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   DateTime? _lastForcedGpsAt;
   Position? _lastPosition;
   AlertRecord? _latest;
+  List<ResponderState> _responders = const [];
 
   StreamSubscription<Position>? _liveLocationSubscription;
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
@@ -560,10 +561,17 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Future<void> _refreshLatest({bool silent = false}) async {
     if (_latest == null || !_backendOnline) return;
     try {
-      final refreshed = await widget.session.api.getAlert(_latest!.id);
+      final alertId = _latest!.id;
+      final results = await Future.wait([
+        widget.session.api.getAlert(alertId),
+        widget.session.api.responders(alertId),
+      ]);
+      final refreshed = results[0] as AlertRecord;
+      final responders = results[1] as List<ResponderState>;
       if (!mounted) return;
       setState(() {
         _latest = refreshed;
+        _responders = responders;
         _lastHeartbeatAt = refreshed.lastDeviceSeenAt?.toLocal() ?? _lastHeartbeatAt;
         _lastPhoneFix = refreshed.lastGpsFixAt?.toLocal() ?? _lastPhoneFix;
         _lastServerSync = refreshed.lastLocationSyncAt?.toLocal() ?? _lastServerSync;
@@ -577,6 +585,19 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       });
       if (!refreshed.isActive) await _stopLiveTracking();
     } catch (_) {}
+  }
+
+  String _responderDistance(int metres) => metres >= 1000
+      ? '${(metres / 1000).toStringAsFixed(2)} km'
+      : '$metres m';
+
+  String _responderEta(int seconds) {
+    if (seconds < 60) return '<1 min';
+    final minutes = (seconds / 60).ceil();
+    if (minutes < 60) return '~$minutes min';
+    final hours = minutes ~/ 60;
+    final rest = minutes % 60;
+    return rest == 0 ? '~${hours}h' : '~${hours}h ${rest}m';
   }
 
   Future<void> _resolveSafe() async {
@@ -877,6 +898,42 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   ),
                   const SizedBox(height: 6),
                   Text('${latest.acknowledgedCount}/${latest.recipients.length} acknowledged · ${latest.deliveredCount}/${latest.recipients.length} delivered'),
+                  if (_responders.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    ..._responders.map(
+                      (responder) => Padding(
+                        padding: const EdgeInsets.only(bottom: 7),
+                        child: Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: .75),
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.volunteer_activism_rounded, color: ViraColors.gold),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      '${responder.responderName} · ${_responderDistance(responder.distanceM)} away · ETA ${_responderEta(responder.etaSeconds)}',
+                                      style: const TextStyle(fontWeight: FontWeight.w900),
+                                    ),
+                                    Text(
+                                      'Responder GPS ${responder.latitude.toStringAsFixed(5)}, ${responder.longitude.toStringAsFixed(5)} · updated ${DateFormat('h:mm:ss a').format(responder.updatedAt.toLocal())}',
+                                      style: const TextStyle(fontSize: 11, color: ViraColors.mutedPlum),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                   if (active) ...[
                     const SizedBox(height: 10),
                     Row(

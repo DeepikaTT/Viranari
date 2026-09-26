@@ -1,58 +1,76 @@
-# ViraNari V1.5.0 — Safety Around Me
+# ViraNari V1.8.0 — Live Coordination
 
-V1.5 keeps the V1.4.3 emergency core and adds three focused differentiators without removing SOS, Trusted Circle, Open Map, Live Track, Inbox or History.
+V1.8 keeps the SOS, Silent Safety Session, Trusted Circle, Safety Map, Safety Compass, Open Map and Live Track core, then focuses on **live movement and responder coordination**. It intentionally does **not** add an emergency timeline and does **not** include CCTV/camera-surveillance features.
 
-## New in V1.5
+## New in V1.8
 
-### 1. Safety Map
-A full-screen map shows:
-- **YOU** at the phone's real current location.
-- **Anonymous pink dots** for opted-in nearby ViraNari installations.
-- **Shield markers** for operator-verified Safe Nodes.
+### 1. Safety Map radius filters actually filter
+The **500 m / 2 km / 5 km** selector now controls:
+- the anonymous-presence backend query;
+- the visible anonymous dots;
+- visible Safe Nodes/public safety places;
+- the map zoom;
+- the counts shown under the map.
 
-Privacy rules:
-- nearby users are mutual opt-in;
-- the backend stores coarsened presence coordinates;
-- nearby responses expose only approximate distance, bearing and age;
-- no name, email, phone number, user ID, device ID or exact nearby-user coordinate is returned;
-- presence expires quickly when a phone stops broadcasting.
+Public safety places can still be cached from OpenStreetMap when no operator-verified ViraNari Safe Nodes are available. They remain clearly labelled **not ViraNari verified**.
 
-The normal bottom navigation remains **Home · Circle · Inbox · History**. Safety Map is opened contextually from Home, so the V1.4.3 interaction model remains intact.
+### 2. Victim ↔ responder live GPS distance
+A trusted contact taps **I'm responding** in Live Track. ViraNari then:
+- acknowledges the SOS;
+- starts sharing that responder's exact GPS only inside that active trusted SOS;
+- shows **both victim and responder markers**;
+- recomputes straight-line distance every few seconds;
+- shows an **Approx ETA** using current responder speed when available, otherwise a conservative walking pace;
+- sends the victim the acknowledged responder's latest position, distance and ETA.
 
-### 2. Silent Safety Session
-Hold the ViraNari **shield logo** in the app bar to start a Silent SOS.
-- two short haptic confirmations;
-- GPS, heartbeat, Trusted Circle delivery and live tracking start exactly like normal SOS;
-- the sender screen suppresses obvious red emergency UI until the session is revealed;
-- responders see a clear **SILENT SOS** label and are warned the sender may be unable to speak/type/use the phone visibly;
-- holding the shield again, or holding the normal SOS control, reveals the active session so it can be resolved/cancelled.
+Exact responder coordinates are never added to the anonymous Safety Map.
 
-### 3. Safety Compass
-The compass points toward a verified Safe Node using:
-- current GPS;
-- device compass heading;
-- distance and bearing calculations;
-- cached Safe Nodes if the network later disappears.
+### 3. Visible live GPS changes
+Live Track now exposes the newest coordinates and update time directly:
+- current victim latitude/longitude;
+- latest GPS-change age;
+- route trail;
+- direction, accuracy and battery;
+- responder distance and approximate ETA when accepted.
 
-ViraNari never invents a Safe Node. Server operators must add and verify real physical places with `backend/manage_safe_nodes.py`.
+The sender still uses the V1.4-style heartbeat/GPS/server-sync separation, so standing still does not mean disconnected.
 
-## Core features retained
-- press-and-hold SOS;
-- heartbeat-based LIVE / DELAYED / OFFLINE state;
-- continuous emergency GPS with `distanceFilter: 0`;
-- background foreground-service location tracking on Android;
-- forced GPS recovery when the location stream goes stale;
-- encrypted local location queue + original-timestamp replay after reconnect;
-- consent-based Trusted Circle;
-- Sent / Delivered / Acknowledged states;
-- responder Emergency Inbox;
-- ViraNari in-app Live Track with route trail, speed, direction, battery and last-known location;
-- external **Open map** for the latest coordinates;
-- emergency History;
+### 4. Incoming SOS full-screen alert
+While ViraNari is running, the Trusted Circle is polled every few seconds. A new unacknowledged SOS opens a non-dismissible full-screen emergency alert that:
+- pulses visually;
+- repeats haptic attention cues;
+- shows Silent SOS clearly;
+- stays until **ACCEPT & OPEN LIVE TRACK** succeeds.
+
+This is a hackathon-ready in-app alert path. Reliable delivery when the app is fully killed requires a real push service such as FCM/APNs and is intentionally not falsely claimed here.
+
+### 5. Android Emulator demo helpers
+No physical GPS hardware is required for the demo. Included scripts:
+
+```fish
+./scripts/emulator_prepare_demo.fish
+./scripts/emulator_route_demo.fish
+```
+
+The first grants runtime permissions to the emulator through ADB, avoiding manual permission tapping. The second injects a moving GPS route into the emulator so the live marker/trail can visibly change. Production phones still require normal Android user permission consent.
+
+## Existing core retained
+- press-and-hold normal SOS;
+- hold ViraNari shield for Silent Safety Session;
+- continuous emergency GPS (`distanceFilter: 0`);
+- heartbeat-based LIVE / DELAYED / OFFLINE;
+- Android foreground emergency tracking;
+- offline GPS queue and reconnect replay;
+- Trusted Circle consent;
+- Sent / Delivered / Acknowledged state;
+- Inbox and History;
+- external Open Map;
+- anonymous Safety Map;
+- Safety Compass;
 - Practice Mode;
-- false-alarm cancellation and “I'm safe” resolution.
+- false-alarm cancellation and I'm Safe resolution.
 
-## Backend quick start
+## Backend
 
 ```bash
 cd backend
@@ -68,33 +86,11 @@ Health:
 curl http://127.0.0.1:3000/health
 ```
 
-Expected version: `1.5.0`.
+Expected version: `1.8.0`.
 
-## Add real Safe Nodes
+Backend automated validation for this package: **36 tests passed**.
 
-List:
-
-```bash
-cd backend
-source venv/bin/activate
-python manage_safe_nodes.py list
-```
-
-Add a place after manually verifying the real location/coordinates:
-
-```bash
-python manage_safe_nodes.py add \
-  --name "Campus Security Gate" \
-  --category campus_security \
-  --lat YOUR_REAL_LATITUDE \
-  --lon YOUR_REAL_LONGITUDE \
-  --address "Actual checked address" \
-  --verified
-```
-
-Do not mark demo/guessed coordinates as verified for real-world use.
-
-## Mobile preparation on Arch
+## Mobile
 
 ```fish
 ./scripts/prepare_mobile.fish
@@ -102,34 +98,25 @@ cd mobile
 flutter clean
 flutter pub get
 flutter analyze
+flutter build apk --release
 ```
 
-Run against your VPS:
+Run against your server:
 
 ```fish
 flutter run --dart-define=VIRANARI_API_BASE=https://YOUR_API_DOMAIN
 ```
 
-`flutter_compass` is added in V1.5, so perform a full rebuild rather than hot-reloading from V1.4.x.
+## Two-user live coordination demo
 
-## Safety Map two-phone test
+1. Phone A starts SOS.
+2. Phone B receives the full-screen incoming alert while ViraNari is running.
+3. B taps **ACCEPT & OPEN LIVE TRACK**.
+4. B taps/uses responder GPS; the Live Track screen shows victim + responder positions.
+5. Move either device (or inject emulator movement).
+6. Watch coordinates, marker position, distance and Approx ETA update.
+7. On A, the emergency card shows the acknowledged responder's latest GPS/distance/ETA.
 
-1. Sign into ViraNari on Phone A and Phone B.
-2. Open **Safety Map** on both phones.
-3. Turn anonymous presence ON on both.
-4. Wait around 10–20 seconds.
-5. Each phone should see the other as an anonymous pink dot if inside the selected radius.
-6. The dot deliberately does not correspond to the other phone's exact GPS point.
+## Prototype boundary
 
-## Silent SOS test
-
-1. Ensure a Trusted Circle recipient exists.
-2. Long-press the shield beside **ViraNari** in the app bar.
-3. Sender receives two haptic pulses.
-4. Receiver opens Inbox and should see **SILENT SOS**.
-5. Receiver can open Live Track/Open Map normally.
-6. Hold the shield again (or hold the normal SOS control) on the sender to reveal the emergency controls.
-
-## Important prototype boundary
-
-ViraNari V1.5 is a hackathon/prototype safety system, not a certified emergency-dispatch product. Safe Nodes must be verified by humans, platform background behavior must be tested on each target phone, and the server should use HTTPS, production database migrations, monitoring and backups before real deployment.
+ViraNari V1.8 is a hackathon prototype, not a certified dispatch system. Full killed-app notification delivery needs a push provider; ETA is approximate rather than road-routing ETA; public OpenStreetMap safety places are not ViraNari-verified unless explicitly added and verified by the operator.

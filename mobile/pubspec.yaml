@@ -1,7 +1,7 @@
 name: viranari_app
-description: ViraNari v1.5 Safety Around Me with anonymous Safety Map, Silent SOS and Safety Compass.
+description: ViraNari v1.8 Live Coordination with real-time responder distance, ETA and incoming SOS overlay.
 publish_to: 'none'
-version: 1.7.0+30
+version: 1.8.0+40
 
 environment:
   sdk: '>=3.13.0 <4.0.0'

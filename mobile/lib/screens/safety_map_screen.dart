@@ -341,6 +341,9 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
     }
 
     final center = LatLng(me.latitude, me.longitude);
+    final visibleSafeNodes = _safeNodes
+        .where((node) => node.approxDistanceM <= _radiusM)
+        .toList(growable: false);
     final presenceMarkers = _enabled
         ? _presence
             .map(
@@ -370,7 +373,7 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
             .toList()
         : <Marker>[];
 
-    final safeMarkers = _safeNodes
+    final safeMarkers = visibleSafeNodes
         .map(
           (node) => Marker(
             point: LatLng(node.latitude, node.longitude),
@@ -576,14 +579,14 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
                         ),
                     ],
                   ),
-                  if (_safeNodes.isNotEmpty) ...[
+                  if (visibleSafeNodes.isNotEmpty) ...[
                     const SizedBox(height: 5),
                     Align(
                       alignment: Alignment.centerLeft,
                       child: Text(
                         _usingPublicPlaces
-                            ? '${_safeNodes.length} public safety places on map · amber = not ViraNari verified'
-                            : '${_safeNodes.length} verified Safe Node${_safeNodes.length == 1 ? '' : 's'} on map',
+                            ? '${visibleSafeNodes.length} public safety place${visibleSafeNodes.length == 1 ? '' : 's'} within ${_distanceText(_radiusM)} · amber = not ViraNari verified'
+                            : '${visibleSafeNodes.length} verified Safe Node${visibleSafeNodes.length == 1 ? '' : 's'} within ${_distanceText(_radiusM)}',
                         style: const TextStyle(
                           color: ViraColors.mutedPlum,
                           fontSize: 11,
@@ -606,7 +609,12 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
                             ],
                             selected: {_radiusM},
                             onSelectionChanged: (value) {
-                              setState(() => _radiusM = value.first);
+                              final radius = value.first;
+                              setState(() {
+                                _radiusM = radius;
+                                _followMe = true;
+                              });
+                              _mapController.move(center, _zoomForRadius(radius));
                               unawaited(_refresh());
                             },
                           ),

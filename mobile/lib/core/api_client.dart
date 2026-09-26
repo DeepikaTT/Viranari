@@ -233,6 +233,29 @@ class ApiClient {
 
   Future<void> acknowledge(String alertId) async => _post('/alerts/$alertId/acknowledge', const {});
 
+  Future<ResponderState> updateResponderLocation(
+    String alertId, {
+    required double latitude,
+    required double longitude,
+    double? accuracyM,
+    double? speedMps,
+    double? headingDeg,
+  }) async =>
+      ResponderState.fromJson(
+        await _post('/alerts/$alertId/responder-location', {
+          'latitude': latitude,
+          'longitude': longitude,
+          'accuracy_m': accuracyM,
+          'speed_mps': speedMps,
+          'heading_deg': headingDeg,
+        }),
+      );
+
+  Future<List<ResponderState>> responders(String alertId) async =>
+      (await _get('/alerts/$alertId/responders') as List<dynamic>)
+          .map((e) => ResponderState.fromJson(e as Map<String, dynamic>))
+          .toList();
+
   Future<void> updatePresence({
     required String deviceId,
     required double latitude,

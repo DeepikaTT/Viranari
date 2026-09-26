@@ -26,6 +26,7 @@ from .models import (
     AlertState,
     ContactStatus,
     SafeNode,
+    ResponderLocation,
     SafetyPresenceDevice,
     TrustedContact,
     User,
@@ -50,6 +51,8 @@ from .schemas import (
     PresencePointOut,
     PresenceUpdateIn,
     RecipientStatusOut,
+    ResponderLocationIn,
+    ResponderStateOut,
     SafeNodeOut,
     RegisterIn,
     TokenOut,
@@ -92,11 +95,12 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
 
     app = FastAPI(
         title="ViraNari API",
-        version="1.5.0",
+        version="1.8.0",
         description=(
             "Emergency-response API with consent-based trusted contacts, delivery receipts, "
             "idempotent offline retry, heartbeat-based live safety, silent safety sessions, "
-            "anonymous Safety Map presence, and verified Safe Node compass support."
+            "anonymous Safety Map presence, responder-to-victim live distance/ETA, incoming SOS coordination, "
+            "and verified Safe Node compass support."
         ),
     )
     app.state.engine = engine
@@ -214,7 +218,7 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "service": "viranari-api", "version": "1.5.0"}
+        return {"status": "ok", "service": "viranari-api", "version": "1.8.0"}
 
     @app.post("/auth/register", response_model=TokenOut, status_code=201)
     def register(payload: RegisterIn, db: Session = Depends(get_db)):
@@ -717,6 +721,114 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
         audit(db, "sos_acknowledged", current.id, alert_id, None)
         db.commit()
         return MessageOut(message="Alert acknowledged")
+
+
+    # ---------- V1.8 trusted responder live location ----------
+    def _responder_state(db: Session, alert: Alert, row: ResponderLocation) -> ResponderStateOut:
+        responder = db.get(User, row.responder_user_id)
+        distance, _ = _distance_and_bearing(alert.latitude, alert.longitude, row.latitude, row.longitude)
+        # Approximate ETA only: use current measured responder speed when useful,
+        # otherwise a conservative walking pace. The UI labels this as approximate.
+        pace_mps = row.speed_mps if row.speed_mps is not None and row.speed_mps >= 0.8 else 1.4
+        eta_seconds = max(0, int(round(distance / max(0.8, pace_mps))))
+        return ResponderStateOut(
+            responder_user_id=row.responder_user_id,
+            responder_name=responder.name if responder else "Trusted responder",
+            latitude=row.latitude,
+            longitude=row.longitude,
+            accuracy_m=row.accuracy_m,
+            speed_mps=row.speed_mps,
+            heading_deg=row.heading_deg,
+            updated_at=ensure_utc(row.updated_at),
+            distance_m=max(0, int(round(distance))),
+            eta_seconds=eta_seconds,
+        )
+
+    @app.post("/alerts/{alert_id}/responder-location", response_model=ResponderStateOut)
+    def update_responder_location(
+        alert_id: str,
+        payload: ResponderLocationIn,
+        current: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ):
+        alert = db.scalar(alert_query().where(Alert.id == alert_id))
+        if not alert:
+            raise HTTPException(status_code=404, detail="Alert not found")
+        if alert.state != AlertState.active.value:
+            raise HTTPException(status_code=409, detail="Emergency is no longer active")
+        recipient = db.scalar(
+            select(AlertRecipient).where(
+                and_(
+                    AlertRecipient.alert_id == alert_id,
+                    AlertRecipient.recipient_user_id == current.id,
+                    AlertRecipient.is_active.is_(True),
+                )
+            )
+        )
+        if not recipient:
+            raise HTTPException(status_code=403, detail="Only trusted recipients can share responder location")
+        if recipient.acknowledged_at is None:
+            raise HTTPException(status_code=409, detail="Acknowledge the SOS before sharing responder location")
+
+        enforce_rate(f"responder-location:{alert_id}:{current.id}", limit=120)
+        row = db.scalar(
+            select(ResponderLocation).where(
+                and_(ResponderLocation.alert_id == alert_id, ResponderLocation.responder_user_id == current.id)
+            )
+        )
+        now = utcnow()
+        if row is None:
+            row = ResponderLocation(
+                alert_id=alert_id,
+                responder_user_id=current.id,
+                latitude=payload.latitude,
+                longitude=payload.longitude,
+                accuracy_m=payload.accuracy_m,
+                speed_mps=payload.speed_mps,
+                heading_deg=payload.heading_deg,
+                updated_at=now,
+            )
+            db.add(row)
+        else:
+            row.latitude = payload.latitude
+            row.longitude = payload.longitude
+            row.accuracy_m = payload.accuracy_m
+            row.speed_mps = payload.speed_mps
+            row.heading_deg = payload.heading_deg
+            row.updated_at = now
+        audit(db, "responder_location_updated", current.id, alert_id, None)
+        db.commit()
+        db.refresh(row)
+        return _responder_state(db, alert, row)
+
+    @app.get("/alerts/{alert_id}/responders", response_model=list[ResponderStateOut])
+    def responder_states(
+        alert_id: str,
+        current: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ):
+        alert = db.scalar(alert_query().where(Alert.id == alert_id))
+        if not alert:
+            raise HTTPException(status_code=404, detail="Alert not found")
+        if not can_view_alert(alert, current.id):
+            raise HTTPException(status_code=403, detail="Not allowed to view this emergency")
+
+        acknowledged_ids = {
+            r.recipient_user_id for r in alert.recipients
+            if r.is_active and r.acknowledged_at is not None
+        }
+        rows = db.scalars(
+            select(ResponderLocation).where(ResponderLocation.alert_id == alert_id)
+        ).all()
+        # The victim can see every acknowledged responder. A responder only sees
+        # their own exact location, avoiding unnecessary contact-to-contact tracking.
+        if current.id != alert.owner_id:
+            rows = [r for r in rows if r.responder_user_id == current.id]
+        else:
+            rows = [r for r in rows if r.responder_user_id in acknowledged_ids]
+        states = [_responder_state(db, alert, row) for row in rows]
+        states.sort(key=lambda item: item.distance_m)
+        return states
 
     # ---------- V1.5 Safety Map anonymous presence ----------
     def _quantise_presence(value: float) -> float:

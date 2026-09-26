@@ -57,7 +57,6 @@ class _InboxScreenState extends State<InboxScreen> {
       if (!_firstLoad && previousIds.isNotEmpty && newActive.isNotEmpty && mounted) {
         final newest = newActive.first;
         await (newest.isTest ? HapticFeedback.selectionClick() : HapticFeedback.heavyImpact());
-        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             duration: const Duration(seconds: 6),

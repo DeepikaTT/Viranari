@@ -3,14 +3,17 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../core/models.dart';
 import '../core/session.dart';
 import '../core/storage.dart';
 import '../core/theme.dart';
 import '../services/location_service.dart';
+import '../widgets/incoming_sos_overlay.dart';
 import 'contacts_screen.dart';
 import 'history_screen.dart';
 import 'home_screen.dart';
 import 'inbox_screen.dart';
+import 'live_tracking_screen.dart';
 
 class MainShell extends StatefulWidget {
   const MainShell({super.key, required this.session});
@@ -25,7 +28,10 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
   final LocationService _location = LocationService();
   int _index = 0;
   Timer? _presenceTimer;
+  Timer? _incomingTimer;
   bool _presenceUpdateRunning = false;
+  bool _incomingPollRunning = false;
+  bool _incomingDialogOpen = false;
 
   @override
   void initState() {
@@ -35,13 +41,19 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
       const Duration(seconds: 20),
       (_) => unawaited(_publishPresenceIfEnabled()),
     );
+    _incomingTimer = Timer.periodic(
+      const Duration(seconds: 3),
+      (_) => unawaited(_checkIncomingSos()),
+    );
     unawaited(_publishPresenceIfEnabled());
+    unawaited(_checkIncomingSos());
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       unawaited(_publishPresenceIfEnabled());
+      unawaited(_checkIncomingSos());
     }
   }
 
@@ -49,6 +61,7 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _presenceTimer?.cancel();
+    _incomingTimer?.cancel();
     super.dispose();
   }
 
@@ -68,6 +81,56 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
       // Presence is intentionally best-effort and must never block SOS/location.
     } finally {
       _presenceUpdateRunning = false;
+    }
+  }
+
+  Future<void> _checkIncomingSos() async {
+    if (_incomingPollRunning || _incomingDialogOpen || !widget.session.isSignedIn) return;
+    _incomingPollRunning = true;
+    try {
+      final items = await widget.session.api.inbox();
+      InboxAlert? candidate;
+      for (final item in items) {
+        if (item.isActive && item.acknowledgedAt == null) {
+          candidate = item;
+          break;
+        }
+      }
+      if (candidate == null || !mounted || _incomingDialogOpen) return;
+      await _showIncomingSos(candidate);
+    } catch (_) {
+      // Incoming SOS polling is best effort; Inbox remains available manually.
+    } finally {
+      _incomingPollRunning = false;
+    }
+  }
+
+  Future<void> _showIncomingSos(InboxAlert alert) async {
+    if (_incomingDialogOpen || !mounted) return;
+    _incomingDialogOpen = true;
+    try {
+      await showGeneralDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        barrierColor: Colors.black54,
+        transitionDuration: const Duration(milliseconds: 220),
+        pageBuilder: (_, __, ___) => IncomingSosOverlay(
+          alert: alert,
+          onAccept: () async {
+            await widget.session.api.acknowledge(alert.alertId);
+            if (!mounted) return;
+            Navigator.of(context, rootNavigator: true).pop();
+            setState(() => _index = 2);
+            await Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => LiveTrackingScreen(session: widget.session, initial: alert),
+              ),
+            );
+          },
+        ),
+      );
+    } finally {
+      _incomingDialogOpen = false;
     }
   }
 

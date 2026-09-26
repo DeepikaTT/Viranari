@@ -351,6 +351,46 @@ class QueuedLocationUpdate {
 }
 
 
+class ResponderState {
+  const ResponderState({
+    required this.responderUserId,
+    required this.responderName,
+    required this.latitude,
+    required this.longitude,
+    required this.updatedAt,
+    required this.distanceM,
+    required this.etaSeconds,
+    this.accuracyM,
+    this.speedMps,
+    this.headingDeg,
+  });
+
+  final String responderUserId;
+  final String responderName;
+  final double latitude;
+  final double longitude;
+  final double? accuracyM;
+  final double? speedMps;
+  final double? headingDeg;
+  final DateTime updatedAt;
+  final int distanceM;
+  final int etaSeconds;
+
+  factory ResponderState.fromJson(Map<String, dynamic> json) => ResponderState(
+        responderUserId: json['responder_user_id'] as String,
+        responderName: json['responder_name'] as String,
+        latitude: (json['latitude'] as num).toDouble(),
+        longitude: (json['longitude'] as num).toDouble(),
+        accuracyM: (json['accuracy_m'] as num?)?.toDouble(),
+        speedMps: (json['speed_mps'] as num?)?.toDouble(),
+        headingDeg: (json['heading_deg'] as num?)?.toDouble(),
+        updatedAt: parseApiTime(json['updated_at'] as String),
+        distanceM: json['distance_m'] as int,
+        etaSeconds: json['eta_seconds'] as int,
+      );
+}
+
+
 class PresencePoint {
   const PresencePoint({
     required this.approxDistanceM,

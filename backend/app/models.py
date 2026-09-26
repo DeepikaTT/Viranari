@@ -120,6 +120,27 @@ class AlertLocation(Base):
     alert: Mapped[Alert] = relationship(back_populates="locations")
 
 
+class ResponderLocation(Base):
+    """Latest opt-in location for an acknowledged trusted responder.
+
+    This is separate from anonymous Safety Map presence. Exact coordinates are
+    shared only inside the active SOS between the victim and trusted responder.
+    """
+
+    __tablename__ = "responder_locations"
+    __table_args__ = (UniqueConstraint("alert_id", "responder_user_id", name="uq_responder_location"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    alert_id: Mapped[str] = mapped_column(ForeignKey("alerts.id", ondelete="CASCADE"), index=True)
+    responder_user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    latitude: Mapped[float] = mapped_column(Float)
+    longitude: Mapped[float] = mapped_column(Float)
+    accuracy_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    speed_mps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    heading_deg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
 class SafetyPresenceDevice(Base):
     """Anonymous per-installation presence used by the Safety Map.
 

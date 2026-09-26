@@ -3,6 +3,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:intl/intl.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -10,6 +11,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../core/models.dart';
 import '../core/session.dart';
 import '../core/theme.dart';
+import '../services/location_service.dart';
 
 class LiveTrackingScreen extends StatefulWidget {
   const LiveTrackingScreen({super.key, required this.session, required this.initial});
@@ -22,18 +24,23 @@ class LiveTrackingScreen extends StatefulWidget {
 
 class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBindingObserver {
   final MapController _mapController = MapController();
+  final LocationService _location = LocationService();
   Timer? _timer;
   AlertRecord? _alert;
   List<AlertLocationPoint> _points = const [];
+  Position? _myPosition;
+  ResponderState? _myResponderState;
   bool _loading = true;
   bool _refreshing = false;
   bool _follow = true;
+  bool _sharingResponderLocation = false;
   String? _error;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _sharingResponderLocation = widget.initial.acknowledgedAt != null;
     _refresh();
     _timer = Timer.periodic(const Duration(seconds: 3), (_) => _refresh(silent: true));
   }
@@ -60,29 +67,54 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
       ]);
       final alert = results[0] as AlertRecord;
       final points = results[1] as List<AlertLocationPoint>;
+
+      ResponderState? responder;
+      Position? myPosition;
+      if (_sharingResponderLocation && alert.isActive) {
+        try {
+          myPosition = await _location.current();
+          responder = await widget.session.api.updateResponderLocation(
+            widget.initial.alertId,
+            latitude: myPosition.latitude,
+            longitude: myPosition.longitude,
+            accuracyM: myPosition.accuracy,
+            speedMps: _safeSpeed(myPosition),
+            headingDeg: _safeHeading(myPosition),
+          );
+        } catch (e) {
+          if (!silent) _error = 'Responder GPS: ${_cleanError(e)}';
+        }
+      }
+
       if (!mounted) return;
       setState(() {
         _alert = alert;
         _points = points;
-        _error = null;
+        if (myPosition != null) _myPosition = myPosition;
+        if (responder != null) _myResponderState = responder;
+        if (responder != null || !_sharingResponderLocation) _error = null;
         _loading = false;
       });
       if (_follow && points.isNotEmpty) {
         final last = points.last;
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) _mapController.move(LatLng(last.latitude, last.longitude), 16.7);
+          if (mounted) _mapController.move(LatLng(last.latitude, last.longitude), 16.2);
         });
       }
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _loading = false;
-        if (!silent) _error = e.toString();
+        if (!silent) _error = _cleanError(e);
       });
     } finally {
       _refreshing = false;
     }
   }
+
+  double? _safeSpeed(Position p) => p.speed.isFinite && p.speed >= 0 ? p.speed : null;
+  double? _safeHeading(Position p) => p.heading.isFinite && p.heading >= 0 && p.heading < 360 ? p.heading : null;
+  String _cleanError(Object e) => e.toString().replaceFirst('Bad state: ', '');
 
   Duration _age(DateTime? time) {
     if (time == null) return const Duration(days: 365);
@@ -155,7 +187,6 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
     var total = 0.0;
     for (var i = 1; i < _points.length; i++) {
       final segment = _distanceMeters(_points[i - 1], _points[i]);
-      // Reject impossible GPS jumps in the prototype trail.
       if (segment < 2000) total += segment;
     }
     return total;
@@ -163,10 +194,29 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
 
   String _formatDistance(double metres) => metres >= 1000 ? '${(metres / 1000).toStringAsFixed(2)} km' : '${metres.toStringAsFixed(0)} m';
 
-  Future<void> _acknowledge() async {
-    await widget.session.api.acknowledge(widget.initial.alertId);
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('The sender can now see that you are responding.')));
+  String _formatEta(int seconds) {
+    if (seconds < 60) return '<1 min';
+    final minutes = (seconds / 60).ceil();
+    if (minutes < 60) return '~$minutes min';
+    final hours = minutes ~/ 60;
+    final rest = minutes % 60;
+    return rest == 0 ? '~${hours}h' : '~${hours}h ${rest}m';
+  }
+
+  Future<void> _startResponding() async {
+    try {
+      await widget.session.api.acknowledge(widget.initial.alertId);
+      if (!mounted) return;
+      setState(() => _sharingResponderLocation = true);
+      await _refresh();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Response accepted. Your live responder location is now shared with the victim.')),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not accept SOS: ${_cleanError(e)}')));
+      }
     }
   }
 
@@ -191,6 +241,8 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
     final center = LatLng(latest.latitude, latest.longitude);
     final bearing = latest.headingDeg ?? _bearingDeg();
     final locationAge = _age(_gpsFix ?? latest.recordedAt);
+    final responder = _myResponderState;
+    final responderPoint = responder == null ? null : LatLng(responder.latitude, responder.longitude);
 
     return Scaffold(
       appBar: AppBar(
@@ -199,7 +251,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
             : '${widget.initial.senderName} · Live Safety'),
         actions: [
           IconButton(
-            tooltip: _follow ? 'Stop following marker' : 'Follow marker',
+            tooltip: _follow ? 'Stop following victim' : 'Follow victim',
             onPressed: () => setState(() => _follow = !_follow),
             icon: Icon(_follow ? Icons.gps_fixed_rounded : Icons.gps_not_fixed_rounded),
           ),
@@ -212,7 +264,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
                 Positioned.fill(
                   child: FlutterMap(
                     mapController: _mapController,
-                    options: MapOptions(initialCenter: center, initialZoom: 16.7),
+                    options: MapOptions(initialCenter: center, initialZoom: 16.2),
                     children: [
                       TileLayer(
                         urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
@@ -225,6 +277,16 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
                               points: _points.map((p) => LatLng(p.latitude, p.longitude)).toList(),
                               strokeWidth: 5,
                               color: ViraColors.pink,
+                            ),
+                          ],
+                        ),
+                      if (responderPoint != null)
+                        PolylineLayer(
+                          polylines: [
+                            Polyline(
+                              points: [center, responderPoint],
+                              strokeWidth: 3,
+                              color: ViraColors.gold,
                             ),
                           ],
                         ),
@@ -250,6 +312,25 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
                               ),
                             ),
                           ),
+                          if (responderPoint != null)
+                            Marker(
+                              point: responderPoint,
+                              width: 62,
+                              height: 62,
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: ViraColors.gold.withValues(alpha: .18),
+                                ),
+                                child: const Center(
+                                  child: CircleAvatar(
+                                    radius: 14,
+                                    backgroundColor: ViraColors.gold,
+                                    child: Icon(Icons.volunteer_activism_rounded, color: Colors.white, size: 17),
+                                  ),
+                                ),
+                              ),
+                            ),
                         ],
                       ),
                       RichAttributionWidget(attributions: [TextSourceAttribution('OpenStreetMap contributors')]),
@@ -273,20 +354,29 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
                             ),
                             const SizedBox(width: 10),
                             Expanded(
-                              child: Text(
-                                'Phone seen ${_ageText(_deviceSeen)}',
-                                style: const TextStyle(fontWeight: FontWeight.w900),
-                              ),
+                              child: Text('Victim phone seen ${_ageText(_deviceSeen)}', style: const TextStyle(fontWeight: FontWeight.w900)),
                             ),
                           ],
                         ),
-                        const SizedBox(height: 8),
+                        const SizedBox(height: 7),
+                        SelectableText(
+                          'GPS ${latest.latitude.toStringAsFixed(6)}, ${latest.longitude.toStringAsFixed(6)}',
+                          style: const TextStyle(fontWeight: FontWeight.w800, color: ViraColors.plum),
+                        ),
+                        const SizedBox(height: 4),
                         Text(
                           locationAge.inSeconds < 30
-                              ? 'Location ${_ageText(_gpsFix ?? latest.recordedAt)} · ${DateFormat('h:mm:ss a').format(latest.recordedAt.toLocal())}'
-                              : 'Phone is ${_deviceState == 'LIVE' ? 'online' : _deviceState.toLowerCase()}, but the last GPS fix is ${_ageText(_gpsFix ?? latest.recordedAt)}.',
+                              ? 'GPS changed ${_ageText(_gpsFix ?? latest.recordedAt)} · ${DateFormat('h:mm:ss a').format(latest.recordedAt.toLocal())}'
+                              : 'Last GPS fix ${_ageText(_gpsFix ?? latest.recordedAt)}.',
                           style: TextStyle(color: locationAge.inSeconds < 30 ? ViraColors.mutedPlum : ViraColors.warning, fontWeight: FontWeight.w700),
                         ),
+                        if (responder != null) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            'You ↔ ${widget.initial.senderName}: ${_formatDistance(responder.distanceM.toDouble())} · Approx ETA ${_formatEta(responder.etaSeconds)}',
+                            style: const TextStyle(color: ViraColors.gold, fontWeight: FontWeight.w900),
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -319,6 +409,23 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
                               ],
                             ),
                           ],
+                          if (_sharingResponderLocation) ...[
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                const Icon(Icons.navigation_rounded, size: 18, color: ViraColors.gold),
+                                const SizedBox(width: 6),
+                                Expanded(
+                                  child: Text(
+                                    _myPosition == null
+                                        ? 'Starting your responder GPS…'
+                                        : 'Your responder GPS updates every few seconds while this screen is open.',
+                                    style: const TextStyle(color: ViraColors.mutedPlum, fontWeight: FontWeight.w700),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
                           if (_error != null) ...[
                             const SizedBox(height: 8),
                             Text(_error!, style: const TextStyle(color: ViraColors.pinkDark)),
@@ -330,7 +437,13 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
                                 Expanded(child: FilledButton.tonalIcon(onPressed: _call, icon: const Icon(Icons.call_rounded), label: const Text('Call'))),
                                 const SizedBox(width: 8),
                               ],
-                              Expanded(child: FilledButton.icon(onPressed: _acknowledge, icon: const Icon(Icons.volunteer_activism_rounded), label: const Text("I'm responding"))),
+                              Expanded(
+                                child: FilledButton.icon(
+                                  onPressed: _sharingResponderLocation ? null : _startResponding,
+                                  icon: Icon(_sharingResponderLocation ? Icons.location_on_rounded : Icons.volunteer_activism_rounded),
+                                  label: Text(_sharingResponderLocation ? 'Responder GPS ON' : "I'm responding"),
+                                ),
+                              ),
                             ],
                           ),
                         ],

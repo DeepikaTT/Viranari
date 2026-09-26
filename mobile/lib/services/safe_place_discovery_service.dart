@@ -41,7 +41,7 @@ out center tags;
               Uri.parse(endpoint),
               headers: const {
                 'Accept': 'application/json',
-                'User-Agent': 'ViraNari/1.7 safety-compass',
+                'User-Agent': 'ViraNari/1.8 live-coordination',
               },
               body: {'data': query},
             )

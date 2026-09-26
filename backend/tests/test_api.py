@@ -718,3 +718,107 @@ def test_36_existing_alert_schema_gains_silent_mode(tmp_path):
     conn.close()
     assert "silent_mode" in cols
     assert value == 0
+
+
+def test_37_responder_location_requires_acknowledgement(client):
+    owner, contact, _ = _pair(client)
+    alert = _alert(client, owner, "responder-no-ack-01").json()
+    r = client.post(
+        f"/alerts/{alert['id']}/responder-location",
+        headers=auth(contact["access_token"]),
+        json={"latitude": 17.390, "longitude": 78.490, "accuracy_m": 5.0},
+    )
+    assert r.status_code == 409
+
+
+def test_38_acknowledged_responder_shares_distance_and_eta_with_victim(client):
+    owner, contact, _ = _pair(client)
+    alert = _alert(client, owner, "responder-live-01").json()
+    ack = client.post(f"/alerts/{alert['id']}/acknowledge", headers=auth(contact["access_token"]))
+    assert ack.status_code == 200
+    update = client.post(
+        f"/alerts/{alert['id']}/responder-location",
+        headers=auth(contact["access_token"]),
+        json={
+            "latitude": 17.390,
+            "longitude": 78.490,
+            "accuracy_m": 5.0,
+            "speed_mps": 2.0,
+            "heading_deg": 45.0,
+        },
+    )
+    assert update.status_code == 200, update.text
+    row = update.json()
+    assert row["distance_m"] > 0
+    assert row["eta_seconds"] > 0
+    assert row["responder_name"] == "Maya"
+
+    victim_view = client.get(
+        f"/alerts/{alert['id']}/responders",
+        headers=auth(owner["access_token"]),
+    )
+    assert victim_view.status_code == 200
+    assert len(victim_view.json()) == 1
+    assert victim_view.json()[0]["responder_user_id"] == row["responder_user_id"]
+
+
+def test_39_responder_view_does_not_expose_other_responder_locations(client):
+    owner = register(client, "Asha", "asha@example.com")
+    maya = register(client, "Maya", "maya@example.com")
+    riya = register(client, "Riya", "riya@example.com")
+    for contact, email in [(maya, "maya@example.com"), (riya, "riya@example.com")]:
+        invite = client.post(
+            "/contacts/invite",
+            headers=auth(owner["access_token"]),
+            json={"email": email, "alias": "Trusted"},
+        ).json()
+        client.post(
+            "/contacts/accept",
+            headers=auth(contact["access_token"]),
+            json={"invite_token": invite["invite_token"]},
+        )
+    alert = _alert(client, owner, "responder-privacy-01").json()
+    for contact, lat in [(maya, 17.390), (riya, 17.395)]:
+        client.post(f"/alerts/{alert['id']}/acknowledge", headers=auth(contact["access_token"]))
+        client.post(
+            f"/alerts/{alert['id']}/responder-location",
+            headers=auth(contact["access_token"]),
+            json={"latitude": lat, "longitude": 78.490},
+        )
+    maya_view = client.get(
+        f"/alerts/{alert['id']}/responders",
+        headers=auth(maya["access_token"]),
+    )
+    assert maya_view.status_code == 200
+    assert len(maya_view.json()) == 1
+    assert maya_view.json()[0]["responder_name"] == "Maya"
+
+
+def test_40_presence_radius_filters_500m_2km_5km(client):
+    user = register(client, "Asha", "asha@example.com")
+    headers = auth(user["access_token"])
+    points = [
+        ("device-a-radius-0001", 17.3850, 78.4867),
+        ("device-b-radius-0001", 17.3880, 78.4867),
+        ("device-c-radius-0001", 17.3990, 78.4867),
+        ("device-d-radius-0001", 17.4240, 78.4867),
+    ]
+    for device_id, lat, lon in points:
+        r = client.post(
+            "/presence",
+            headers=headers,
+            json={"device_id": device_id, "latitude": lat, "longitude": lon, "enabled": True},
+        )
+        assert r.status_code == 200
+
+    def count(radius):
+        r = client.get(
+            f"/presence/nearby?device_id=device-a-radius-0001&latitude=17.385&longitude=78.4867&radius_m={radius}",
+            headers=headers,
+        )
+        assert r.status_code == 200
+        return len(r.json())
+
+    assert count(500) == 1
+    assert count(2000) == 2
+    assert count(5000) == 3

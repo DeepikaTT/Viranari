@@ -164,6 +164,28 @@ class InboxAlertOut(BaseModel):
     last_location_sync_at: datetime | None
 
 
+class ResponderLocationIn(BaseModel):
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    accuracy_m: float | None = Field(default=None, ge=0)
+    speed_mps: float | None = Field(default=None, ge=0)
+    heading_deg: float | None = Field(default=None, ge=0, lt=360)
+
+
+class ResponderStateOut(BaseModel):
+    responder_user_id: str
+    responder_name: str
+    latitude: float
+    longitude: float
+    accuracy_m: float | None = None
+    speed_mps: float | None = None
+    heading_deg: float | None = None
+    updated_at: datetime
+    distance_m: int
+    eta_seconds: int
+
+
+
 class PresenceUpdateIn(BaseModel):
     device_id: str = Field(min_length=8, max_length=80)
     latitude: float = Field(ge=-90, le=90)
