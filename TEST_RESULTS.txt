@@ -1,2 +1,2 @@
-Backend test result: 36 passed
-Flutter build/analyze: not executed in packaging environment; run locally before APK release.
+Backend tests: 37 passed
+Flutter SDK not available in packaging environment; run flutter analyze locally.

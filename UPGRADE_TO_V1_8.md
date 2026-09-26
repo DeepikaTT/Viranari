@@ -12,7 +12,7 @@ python run.py
 curl http://127.0.0.1:3000/health
 ```
 
-Expected API version: `1.8.0`.
+Expected API version: `1.8.1`.
 
 Mobile:
 
@@ -24,4 +24,4 @@ flutter analyze
 flutter build apk --release
 ```
 
-The Android package version is `1.8.0+40`.
+The Android package version is `1.8.1+41`.

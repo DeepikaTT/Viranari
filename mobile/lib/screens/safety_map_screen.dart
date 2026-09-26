@@ -70,6 +70,43 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
     super.dispose();
   }
 
+  SafeNodePoint _recalculateSafeNode(Position position, SafeNodePoint node) {
+    final distance = Geolocator.distanceBetween(
+      position.latitude,
+      position.longitude,
+      node.latitude,
+      node.longitude,
+    );
+    final bearing = (Geolocator.bearingBetween(
+              position.latitude,
+              position.longitude,
+              node.latitude,
+              node.longitude,
+            ) +
+            360) %
+        360;
+    return SafeNodePoint(
+      id: node.id,
+      name: node.name,
+      category: node.category,
+      latitude: node.latitude,
+      longitude: node.longitude,
+      phoneE164: node.phoneE164,
+      address: node.address,
+      verified: node.verified,
+      approxDistanceM: distance.round(),
+      bearingDeg: bearing.round() % 360,
+    );
+  }
+
+  List<SafeNodePoint> _recalculateSafeNodes(
+    Position position,
+    Iterable<SafeNodePoint> nodes,
+  ) =>
+      nodes
+          .map((node) => _recalculateSafeNode(position, node))
+          .toList(growable: false);
+
   Future<List<SafeNodePoint>> _loadSafePlaces(Position position) async {
     try {
       final verified = await widget.session.api.nearbySafeNodes(
@@ -79,8 +116,9 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
       );
       if (verified.isNotEmpty) {
         _usingPublicPlaces = false;
-        await _safeNodeCache.save(verified);
-        return verified;
+        final recalculated = _recalculateSafeNodes(position, verified);
+        await _safeNodeCache.save(recalculated);
+        return recalculated;
       }
     } catch (_) {
       // Continue to public/cached fallback below.
@@ -99,14 +137,15 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
         _lastPublicLookup = DateTime.now();
         if (public.isNotEmpty) {
           _usingPublicPlaces = true;
-          await _safeNodeCache.save(public);
-          return public;
+          final recalculated = _recalculateSafeNodes(position, public);
+          await _safeNodeCache.save(recalculated);
+          return recalculated;
         }
       } catch (_) {
         _lastPublicLookup = DateTime.now();
       }
     } else if (_safeNodes.isNotEmpty && _usingPublicPlaces) {
-      return _safeNodes;
+      return _recalculateSafeNodes(position, _safeNodes);
     }
 
     final cached = await _safeNodeCache.load();
@@ -120,8 +159,9 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
       return d <= 10000;
     }).toList();
     if (nearby.isNotEmpty) {
-      _usingPublicPlaces = nearby.any((node) => !node.verified);
-      return nearby;
+      final recalculated = _recalculateSafeNodes(position, nearby);
+      _usingPublicPlaces = recalculated.any((node) => !node.verified);
+      return recalculated;
     }
 
     _usingPublicPlaces = false;
@@ -200,9 +240,11 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
   }
 
   double _zoomForRadius(int radius) {
-    if (radius <= 500) return 16.5;
-    if (radius <= 2000) return 14.8;
-    return 13.5;
+    // Show roughly the full diameter, not just the centre of the selected
+    // search radius. This makes 500 m / 2 km / 5 km controls visibly distinct.
+    if (radius <= 500) return 15.5;
+    if (radius <= 2000) return 13.7;
+    return 12.3;
   }
 
   Future<void> _togglePresence(bool value) async {
@@ -260,6 +302,48 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
   String _distanceText(int metres) => metres >= 1000
       ? '${(metres / 1000).toStringAsFixed(1)} km'
       : '~$metres m';
+
+  IconData _safeNodeIcon(String category) {
+    switch (category.toLowerCase()) {
+      case 'police':
+        return Icons.local_police_rounded;
+      case 'hospital':
+        return Icons.local_hospital_rounded;
+      case 'pharmacy':
+        return Icons.local_pharmacy_rounded;
+      case 'campus_security':
+      case 'security':
+        return Icons.security_rounded;
+      case 'hostel_security':
+        return Icons.home_work_rounded;
+      case 'petrol_pump':
+        return Icons.local_gas_station_rounded;
+      case 'staffed_place':
+        return Icons.local_fire_department_rounded;
+      default:
+        return Icons.health_and_safety_rounded;
+    }
+  }
+
+  String _safeNodeShortLabel(String category) {
+    switch (category.toLowerCase()) {
+      case 'police':
+        return 'Police';
+      case 'hospital':
+        return 'Hospital';
+      case 'pharmacy':
+        return 'Pharmacy';
+      case 'campus_security':
+      case 'security':
+        return 'Security';
+      case 'petrol_pump':
+        return 'Fuel';
+      case 'staffed_place':
+        return 'Help';
+      default:
+        return 'Safe';
+    }
+  }
 
   void _showPresence(PresencePoint point) {
     showModalBottomSheet<void>(
@@ -344,6 +428,16 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
     final visibleSafeNodes = _safeNodes
         .where((node) => node.approxDistanceM <= _radiusM)
         .toList(growable: false);
+    final hospitalCount = visibleSafeNodes
+        .where((node) => node.category == 'hospital')
+        .length;
+    final policeCount = visibleSafeNodes
+        .where((node) => node.category == 'police')
+        .length;
+    final pharmacyCount = visibleSafeNodes
+        .where((node) => node.category == 'pharmacy')
+        .length;
+
     final presenceMarkers = _enabled
         ? _presence
             .map(
@@ -377,24 +471,49 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
         .map(
           (node) => Marker(
             point: LatLng(node.latitude, node.longitude),
-            width: 48,
-            height: 48,
+            width: 76,
+            height: 70,
             child: GestureDetector(
               onTap: () => _openSafeNode(node),
-              child: Container(
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: node.verified ? ViraColors.plum : ViraColors.warning,
-                  border: Border.all(color: Colors.white, width: 2),
-                  boxShadow: const [
-                    BoxShadow(blurRadius: 8, color: Colors.black26),
-                  ],
-                ),
-                child: Icon(
-                  node.verified ? Icons.shield_rounded : Icons.local_hospital_rounded,
-                  color: Colors.white,
-                  size: 22,
-                ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Stack(
+                    alignment: const Alignment(0, -0.12),
+                    children: [
+                      Icon(
+                        Icons.location_pin,
+                        size: 48,
+                        color: node.verified ? ViraColors.plum : ViraColors.warning,
+                        shadows: const [
+                          Shadow(blurRadius: 8, color: Colors.black38),
+                        ],
+                      ),
+                      Icon(
+                        _safeNodeIcon(node.category),
+                        color: Colors.white,
+                        size: 19,
+                      ),
+                    ],
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                    decoration: BoxDecoration(
+                      color: ViraColors.surface.withValues(alpha: .92),
+                      borderRadius: BorderRadius.circular(7),
+                    ),
+                    child: Text(
+                      _safeNodeShortLabel(node.category),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 8,
+                        fontWeight: FontWeight.w900,
+                        color: ViraColors.plum,
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -433,7 +552,7 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
                     mapController: _mapController,
                     options: MapOptions(
                       initialCenter: center,
-                      initialZoom: 14.8,
+                      initialZoom: _zoomForRadius(_radiusM),
                       onPositionChanged: (_, hasGesture) {
                         if (hasGesture && _followMe && mounted) {
                           setState(() => _followMe = false);
@@ -585,7 +704,7 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
                       alignment: Alignment.centerLeft,
                       child: Text(
                         _usingPublicPlaces
-                            ? '${visibleSafeNodes.length} public safety place${visibleSafeNodes.length == 1 ? '' : 's'} within ${_distanceText(_radiusM)} · amber = not ViraNari verified'
+                            ? '${visibleSafeNodes.length} public places · $hospitalCount hospital · $policeCount police · $pharmacyCount pharmacy · amber = public'
                             : '${visibleSafeNodes.length} verified Safe Node${visibleSafeNodes.length == 1 ? '' : 's'} within ${_distanceText(_radiusM)}',
                         style: const TextStyle(
                           color: ViraColors.mutedPlum,

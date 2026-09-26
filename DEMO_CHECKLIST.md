@@ -1,6 +1,6 @@
 # V1.8 demo checklist
 
-- [ ] `/health` returns version `1.8.0`.
+- [ ] `/health` returns version `1.8.1`.
 - [ ] Safety Map 500 m / 2 km / 5 km changes visible counts and map zoom.
 - [ ] Two opted-in phones appear as anonymous Safety Map presence when inside selected radius.
 - [ ] Silent SOS still starts by holding the ViraNari shield.

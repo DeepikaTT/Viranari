@@ -256,6 +256,11 @@ class ApiClient {
           .map((e) => ResponderState.fromJson(e as Map<String, dynamic>))
           .toList();
 
+  Future<List<ResponderTrailPoint>> responderTrail(String alertId) async =>
+      (await _get('/alerts/$alertId/responder-locations') as List<dynamic>)
+          .map((e) => ResponderTrailPoint.fromJson(e as Map<String, dynamic>))
+          .toList();
+
   Future<void> updatePresence({
     required String deviceId,
     required double latitude,

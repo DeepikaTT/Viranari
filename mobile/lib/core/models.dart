@@ -391,6 +391,34 @@ class ResponderState {
 }
 
 
+class ResponderTrailPoint {
+  const ResponderTrailPoint({
+    required this.latitude,
+    required this.longitude,
+    required this.recordedAt,
+    this.accuracyM,
+    this.speedMps,
+    this.headingDeg,
+  });
+
+  final double latitude;
+  final double longitude;
+  final double? accuracyM;
+  final double? speedMps;
+  final double? headingDeg;
+  final DateTime recordedAt;
+
+  factory ResponderTrailPoint.fromJson(Map<String, dynamic> json) => ResponderTrailPoint(
+        latitude: (json['latitude'] as num).toDouble(),
+        longitude: (json['longitude'] as num).toDouble(),
+        accuracyM: (json['accuracy_m'] as num?)?.toDouble(),
+        speedMps: (json['speed_mps'] as num?)?.toDouble(),
+        headingDeg: (json['heading_deg'] as num?)?.toDouble(),
+        recordedAt: parseApiTime(json['recorded_at'] as String),
+      );
+}
+
+
 class PresencePoint {
   const PresencePoint({
     required this.approxDistanceM,

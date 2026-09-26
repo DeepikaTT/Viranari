@@ -28,6 +28,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
   Timer? _timer;
   AlertRecord? _alert;
   List<AlertLocationPoint> _points = const [];
+  List<ResponderTrailPoint> _responderTrail = const [];
   Position? _myPosition;
   ResponderState? _myResponderState;
   bool _loading = true;
@@ -64,9 +65,11 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
       final results = await Future.wait([
         widget.session.api.getAlert(widget.initial.alertId),
         widget.session.api.locations(widget.initial.alertId),
+        widget.session.api.responderTrail(widget.initial.alertId),
       ]);
       final alert = results[0] as AlertRecord;
       final points = results[1] as List<AlertLocationPoint>;
+      final responderTrail = results[2] as List<ResponderTrailPoint>;
 
       ResponderState? responder;
       Position? myPosition;
@@ -90,6 +93,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
       setState(() {
         _alert = alert;
         _points = points;
+        _responderTrail = responderTrail;
         if (myPosition != null) _myPosition = myPosition;
         if (responder != null) _myResponderState = responder;
         if (responder != null || !_sharingResponderLocation) _error = null;
@@ -280,12 +284,14 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
                             ),
                           ],
                         ),
-                      if (responderPoint != null)
+                      if (_responderTrail.length > 1)
                         PolylineLayer(
                           polylines: [
                             Polyline(
-                              points: [center, responderPoint],
-                              strokeWidth: 3,
+                              points: _responderTrail
+                                  .map((p) => LatLng(p.latitude, p.longitude))
+                                  .toList(growable: false),
+                              strokeWidth: 4,
                               color: ViraColors.gold,
                             ),
                           ],

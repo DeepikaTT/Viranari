@@ -27,6 +27,7 @@ from .models import (
     ContactStatus,
     SafeNode,
     ResponderLocation,
+    ResponderLocationPoint,
     SafetyPresenceDevice,
     TrustedContact,
     User,
@@ -53,6 +54,7 @@ from .schemas import (
     RecipientStatusOut,
     ResponderLocationIn,
     ResponderStateOut,
+    ResponderTrailPointOut,
     SafeNodeOut,
     RegisterIn,
     TokenOut,
@@ -95,7 +97,7 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
 
     app = FastAPI(
         title="ViraNari API",
-        version="1.8.0",
+        version="1.8.1",
         description=(
             "Emergency-response API with consent-based trusted contacts, delivery receipts, "
             "idempotent offline retry, heartbeat-based live safety, silent safety sessions, "
@@ -218,7 +220,7 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "service": "viranari-api", "version": "1.8.0"}
+        return {"status": "ok", "service": "viranari-api", "version": "1.8.1"}
 
     @app.post("/auth/register", response_model=TokenOut, status_code=201)
     def register(payload: RegisterIn, db: Session = Depends(get_db)):
@@ -796,6 +798,44 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
             row.speed_mps = payload.speed_mps
             row.heading_deg = payload.heading_deg
             row.updated_at = now
+        # Keep a compact responder breadcrumb trail. We store a point when the
+        # responder moved meaningfully or enough time elapsed, which filters
+        # stationary GPS jitter while preserving real travel.
+        last_point = db.scalar(
+            select(ResponderLocationPoint)
+            .where(
+                and_(
+                    ResponderLocationPoint.alert_id == alert_id,
+                    ResponderLocationPoint.responder_user_id == current.id,
+                )
+            )
+            .order_by(ResponderLocationPoint.recorded_at.desc())
+            .limit(1)
+        )
+        should_store = last_point is None
+        if last_point is not None:
+            moved_m, _ = _distance_and_bearing(
+                last_point.latitude,
+                last_point.longitude,
+                payload.latitude,
+                payload.longitude,
+            )
+            age_s = max(0.0, (now - ensure_utc(last_point.recorded_at)).total_seconds())
+            should_store = moved_m >= 4.0 or age_s >= 12.0
+        if should_store:
+            db.add(
+                ResponderLocationPoint(
+                    alert_id=alert_id,
+                    responder_user_id=current.id,
+                    latitude=payload.latitude,
+                    longitude=payload.longitude,
+                    accuracy_m=payload.accuracy_m,
+                    speed_mps=payload.speed_mps,
+                    heading_deg=payload.heading_deg,
+                    recorded_at=now,
+                )
+            )
+
         audit(db, "responder_location_updated", current.id, alert_id, None)
         db.commit()
         db.refresh(row)
@@ -829,6 +869,79 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
         states = [_responder_state(db, alert, row) for row in rows]
         states.sort(key=lambda item: item.distance_m)
         return states
+
+    @app.get("/alerts/{alert_id}/responder-locations", response_model=list[ResponderTrailPointOut])
+    def responder_location_trail(
+        alert_id: str,
+        current: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ):
+        alert = db.scalar(alert_query().where(Alert.id == alert_id))
+        if not alert:
+            raise HTTPException(status_code=404, detail="Alert not found")
+        if not can_view_alert(alert, current.id):
+            raise HTTPException(status_code=403, detail="Not allowed to view this emergency")
+
+        responder_id = current.id
+        if current.id == alert.owner_id:
+            acknowledged_ids = [
+                r.recipient_user_id
+                for r in alert.recipients
+                if r.is_active and r.acknowledged_at is not None
+            ]
+            if not acknowledged_ids:
+                return []
+            latest = db.scalar(
+                select(ResponderLocation)
+                .where(
+                    and_(
+                        ResponderLocation.alert_id == alert_id,
+                        ResponderLocation.responder_user_id.in_(acknowledged_ids),
+                    )
+                )
+                .order_by(ResponderLocation.updated_at.desc())
+                .limit(1)
+            )
+            if latest is None:
+                return []
+            responder_id = latest.responder_user_id
+        else:
+            recipient = db.scalar(
+                select(AlertRecipient).where(
+                    and_(
+                        AlertRecipient.alert_id == alert_id,
+                        AlertRecipient.recipient_user_id == current.id,
+                        AlertRecipient.is_active.is_(True),
+                        AlertRecipient.acknowledged_at.is_not(None),
+                    )
+                )
+            )
+            if recipient is None:
+                return []
+
+        rows = db.scalars(
+            select(ResponderLocationPoint)
+            .where(
+                and_(
+                    ResponderLocationPoint.alert_id == alert_id,
+                    ResponderLocationPoint.responder_user_id == responder_id,
+                )
+            )
+            .order_by(ResponderLocationPoint.recorded_at.asc())
+        ).all()
+        rows = rows[-180:]
+        return [
+            ResponderTrailPointOut(
+                latitude=row.latitude,
+                longitude=row.longitude,
+                accuracy_m=row.accuracy_m,
+                speed_mps=row.speed_mps,
+                heading_deg=row.heading_deg,
+                recorded_at=ensure_utc(row.recorded_at),
+            )
+            for row in rows
+        ]
+
 
     # ---------- V1.5 Safety Map anonymous presence ----------
     def _quantise_presence(value: float) -> float:

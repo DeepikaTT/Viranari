@@ -41,7 +41,7 @@ out center tags;
               Uri.parse(endpoint),
               headers: const {
                 'Accept': 'application/json',
-                'User-Agent': 'ViraNari/1.8 live-coordination',
+                'User-Agent': 'ViraNari/1.8.1 live-map',
               },
               body: {'data': query},
             )
@@ -102,7 +102,7 @@ out center tags;
         }
 
         out.sort((a, b) => a.approxDistanceM.compareTo(b.approxDistanceM));
-        return out.take(30).toList(growable: false);
+        return out.take(100).toList(growable: false);
       } catch (e) {
         lastError = e;
       }

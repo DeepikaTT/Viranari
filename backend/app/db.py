@@ -125,7 +125,7 @@ def apply_compat_migrations(engine) -> None:
 
         now = datetime.now(timezone.utc).isoformat()
         conn.execute(
-            text("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (180, :now)"),
+            text("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (181, :now)"),
             {"now": now},
         )
 

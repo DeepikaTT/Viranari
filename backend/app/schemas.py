@@ -186,6 +186,15 @@ class ResponderStateOut(BaseModel):
 
 
 
+class ResponderTrailPointOut(BaseModel):
+    latitude: float
+    longitude: float
+    accuracy_m: float | None = None
+    speed_mps: float | None = None
+    heading_deg: float | None = None
+    recorded_at: datetime
+
+
 class PresenceUpdateIn(BaseModel):
     device_id: str = Field(min_length=8, max_length=80)
     latitude: float = Field(ge=-90, le=90)

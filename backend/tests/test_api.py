@@ -822,3 +822,33 @@ def test_40_presence_radius_filters_500m_2km_5km(client):
     assert count(500) == 1
     assert count(2000) == 2
     assert count(5000) == 3
+
+
+def test_41_responder_trail_records_movement(client):
+    owner, contact, _ = _pair(client)
+    alert = _alert(client, owner, "responder-trail-01").json()
+    client.post(f"/alerts/{alert['id']}/acknowledge", headers=auth(contact["access_token"]))
+
+    for lat, lon in [(17.3900, 78.4900), (17.3902, 78.4902)]:
+        r = client.post(
+            f"/alerts/{alert['id']}/responder-location",
+            headers=auth(contact["access_token"]),
+            json={"latitude": lat, "longitude": lon, "accuracy_m": 5.0},
+        )
+        assert r.status_code == 200, r.text
+
+    trail = client.get(
+        f"/alerts/{alert['id']}/responder-locations",
+        headers=auth(contact["access_token"]),
+    )
+    assert trail.status_code == 200, trail.text
+    points = trail.json()
+    assert len(points) >= 2
+    assert points[-1]["latitude"] == 17.3902
+
+    victim_trail = client.get(
+        f"/alerts/{alert['id']}/responder-locations",
+        headers=auth(owner["access_token"]),
+    )
+    assert victim_trail.status_code == 200
+    assert len(victim_trail.json()) >= 2

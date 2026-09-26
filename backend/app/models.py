@@ -141,6 +141,28 @@ class ResponderLocation(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
 
+class ResponderLocationPoint(Base):
+    """Breadcrumb history for an acknowledged trusted responder.
+
+    Exact responder coordinates remain scoped to the active emergency. The
+    latest responder position still lives in responder_locations; this table
+    stores a short trail so the map shows real movement instead of a single
+    straight connector line.
+    """
+
+    __tablename__ = "responder_location_points"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    alert_id: Mapped[str] = mapped_column(ForeignKey("alerts.id", ondelete="CASCADE"), index=True)
+    responder_user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    latitude: Mapped[float] = mapped_column(Float)
+    longitude: Mapped[float] = mapped_column(Float)
+    accuracy_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    speed_mps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    heading_deg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
 class SafetyPresenceDevice(Base):
     """Anonymous per-installation presence used by the Safety Map.
 
