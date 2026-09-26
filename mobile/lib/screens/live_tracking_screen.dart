@@ -35,6 +35,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
   bool _refreshing = false;
   bool _follow = true;
   bool _sharingResponderLocation = false;
+  bool _showGpsTimeline = true;
   String? _error;
 
   @override
@@ -205,6 +206,124 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
     final hours = minutes ~/ 60;
     final rest = minutes % 60;
     return rest == 0 ? '~${hours}h' : '~${hours}h ${rest}m';
+  }
+
+  String _gpsDeltaText(int index) {
+    if (index <= 0 || index >= _points.length) return 'session start';
+    final metres = _distanceMeters(_points[index - 1], _points[index]);
+    if (metres < 2) return 'same position';
+    return '+${_formatDistance(metres)}';
+  }
+
+  Widget _buildGpsTimeline() {
+    final count = _points.length;
+    final start = math.max(0, count - 4);
+    final indices = <int>[
+      for (var i = count - 1; i >= start; i--) i,
+    ];
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Divider(height: 18),
+        InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: () => setState(() => _showGpsTimeline = !_showGpsTimeline),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 2),
+            child: Row(
+              children: [
+                const Icon(Icons.timeline_rounded, size: 18, color: ViraColors.plum),
+                const SizedBox(width: 7),
+                const Expanded(
+                  child: Text(
+                    'LIVE GPS UPDATES',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: .5,
+                      color: ViraColors.plum,
+                    ),
+                  ),
+                ),
+                Text(
+                  '$count fixes',
+                  style: const TextStyle(fontSize: 10, color: ViraColors.mutedPlum),
+                ),
+                const SizedBox(width: 3),
+                Icon(
+                  _showGpsTimeline ? Icons.expand_less_rounded : Icons.expand_more_rounded,
+                  size: 20,
+                  color: ViraColors.mutedPlum,
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (_showGpsTimeline) ...[
+          const SizedBox(height: 6),
+          if (indices.isEmpty)
+            const Text(
+              'Waiting for the first live GPS sample…',
+              style: TextStyle(fontSize: 11, color: ViraColors.mutedPlum),
+            )
+          else
+            ...indices.map((index) {
+              final point = _points[index];
+              final latestPoint = index == _points.length - 1;
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 5),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      margin: const EdgeInsets.only(top: 4),
+                      width: 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: latestPoint ? ViraColors.pinkDark : ViraColors.lilacStrong,
+                      ),
+                    ),
+                    const SizedBox(width: 7),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Text(
+                                DateFormat('h:mm:ss a').format(point.recordedAt.toLocal()),
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: latestPoint ? FontWeight.w900 : FontWeight.w700,
+                                  color: latestPoint ? ViraColors.pinkDark : ViraColors.plum,
+                                ),
+                              ),
+                              const SizedBox(width: 7),
+                              Text(
+                                _gpsDeltaText(index),
+                                style: const TextStyle(fontSize: 10, color: ViraColors.mutedPlum),
+                              ),
+                            ],
+                          ),
+                          Text(
+                            '${point.latitude.toStringAsFixed(6)}, ${point.longitude.toStringAsFixed(6)}'
+                            '${point.accuracyM == null ? '' : '  ±${point.accuracyM!.toStringAsFixed(0)}m'}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 10, color: ViraColors.mutedPlum),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }),
+        ],
+      ],
+    );
   }
 
   Future<void> _startResponding() async {
@@ -383,6 +502,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
                             style: const TextStyle(color: ViraColors.gold, fontWeight: FontWeight.w900),
                           ),
                         ],
+                        _buildGpsTimeline(),
                       ],
                     ),
                   ),

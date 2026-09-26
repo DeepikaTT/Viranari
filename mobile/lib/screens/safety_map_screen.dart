@@ -108,60 +108,82 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
           .toList(growable: false);
 
   Future<List<SafeNodePoint>> _loadSafePlaces(Position position) async {
+    final verified = <SafeNodePoint>[];
+    final publicPlaces = <SafeNodePoint>[];
+
+    // V1.8.2 deliberately augments verified Safe Nodes with public map data.
+    // A single verified node must never suppress nearby hospitals/police/etc.
     try {
-      final verified = await widget.session.api.nearbySafeNodes(
-        latitude: position.latitude,
-        longitude: position.longitude,
-        radiusM: 10000,
-      );
-      if (verified.isNotEmpty) {
-        _usingPublicPlaces = false;
-        final recalculated = _recalculateSafeNodes(position, verified);
-        await _safeNodeCache.save(recalculated);
-        return recalculated;
-      }
-    } catch (_) {
-      // Continue to public/cached fallback below.
-    }
-
-    final shouldRefreshPublic = _lastPublicLookup == null ||
-        DateTime.now().difference(_lastPublicLookup!) > const Duration(minutes: 5);
-
-    if (shouldRefreshPublic) {
-      try {
-        final public = await _publicPlaces.discover(
+      verified.addAll(
+        await widget.session.api.nearbySafeNodes(
           latitude: position.latitude,
           longitude: position.longitude,
           radiusM: 10000,
+        ),
+      );
+    } catch (_) {
+      // Public/cached places can still keep the Safety Map useful.
+    }
+
+    final shouldRefreshPublic = _lastPublicLookup == null ||
+        DateTime.now().difference(_lastPublicLookup!) >
+            const Duration(minutes: 5);
+
+    if (shouldRefreshPublic) {
+      try {
+        publicPlaces.addAll(
+          await _publicPlaces.discover(
+            latitude: position.latitude,
+            longitude: position.longitude,
+            radiusM: 10000,
+          ),
         );
         _lastPublicLookup = DateTime.now();
-        if (public.isNotEmpty) {
-          _usingPublicPlaces = true;
-          final recalculated = _recalculateSafeNodes(position, public);
-          await _safeNodeCache.save(recalculated);
-          return recalculated;
-        }
       } catch (_) {
         _lastPublicLookup = DateTime.now();
       }
-    } else if (_safeNodes.isNotEmpty && _usingPublicPlaces) {
-      return _recalculateSafeNodes(position, _safeNodes);
+    } else {
+      publicPlaces.addAll(_safeNodes.where((node) => !node.verified));
     }
 
-    final cached = await _safeNodeCache.load();
-    final nearby = cached.where((node) {
-      final d = Geolocator.distanceBetween(
-        position.latitude,
-        position.longitude,
-        node.latitude,
-        node.longitude,
-      );
-      return d <= 10000;
-    }).toList();
-    if (nearby.isNotEmpty) {
-      final recalculated = _recalculateSafeNodes(position, nearby);
-      _usingPublicPlaces = recalculated.any((node) => !node.verified);
-      return recalculated;
+    if (publicPlaces.isEmpty) {
+      final cached = await _safeNodeCache.load();
+      publicPlaces.addAll(cached.where((node) => !node.verified));
+      if (verified.isEmpty) {
+        verified.addAll(cached.where((node) => node.verified));
+      }
+    }
+
+    final recalculatedVerified = _recalculateSafeNodes(position, verified);
+    final recalculatedPublic = _recalculateSafeNodes(position, publicPlaces);
+
+    final merged = <SafeNodePoint>[];
+    for (final node in recalculatedVerified) {
+      if (node.approxDistanceM <= 10000) merged.add(node);
+    }
+
+    // Prefer a verified entry when OpenStreetMap has effectively the same place.
+    for (final node in recalculatedPublic) {
+      if (node.approxDistanceM > 10000) continue;
+      final duplicateVerified = merged.any((existing) {
+        if (!existing.verified || existing.category != node.category) return false;
+        final d = Geolocator.distanceBetween(
+          existing.latitude,
+          existing.longitude,
+          node.latitude,
+          node.longitude,
+        );
+        return d < 80;
+      });
+      if (!duplicateVerified) merged.add(node);
+    }
+
+    merged.sort((a, b) => a.approxDistanceM.compareTo(b.approxDistanceM));
+    _usingPublicPlaces = merged.any((node) => !node.verified);
+
+    if (merged.isNotEmpty) {
+      await _safeNodeCache.save(merged);
+      return merged;
     }
 
     _usingPublicPlaces = false;

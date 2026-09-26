@@ -5,12 +5,11 @@ import 'package:http/http.dart' as http;
 
 import '../core/models.dart';
 
-/// Best-effort public-place fallback used only when the ViraNari backend has no
-/// operator-verified Safe Nodes near the user.
+/// Best-effort public-place fallback/augmentation for the Safety Map.
 ///
-/// Data comes from OpenStreetMap/Overpass. These results are intentionally
-/// returned with verified=false so the UI never labels community-mapped places
-/// as ViraNari-verified.
+/// ViraNari-verified Safe Nodes still come from the backend. This service adds
+/// public OpenStreetMap places so the map remains useful and visually rich even
+/// when only a few operator-verified nodes exist nearby.
 class SafePlaceDiscoveryService {
   static const _endpoints = <String>[
     'https://overpass-api.de/api/interpreter',
@@ -24,11 +23,14 @@ class SafePlaceDiscoveryService {
   }) async {
     final boundedRadius = radiusM.clamp(1000, 25000);
     final query = '''
-[out:json][timeout:10];
+[out:json][timeout:12];
 (
-  node(around:$boundedRadius,$latitude,$longitude)["amenity"~"^(police|hospital|pharmacy|clinic|fire_station)\$"];
-  way(around:$boundedRadius,$latitude,$longitude)["amenity"~"^(police|hospital|pharmacy|clinic|fire_station)\$"];
-  relation(around:$boundedRadius,$latitude,$longitude)["amenity"~"^(police|hospital|pharmacy|clinic|fire_station)\$"];
+  node(around:$boundedRadius,$latitude,$longitude)["amenity"~"^(police|hospital|pharmacy|clinic|doctors|fire_station)\$"];
+  way(around:$boundedRadius,$latitude,$longitude)["amenity"~"^(police|hospital|pharmacy|clinic|doctors|fire_station)\$"];
+  relation(around:$boundedRadius,$latitude,$longitude)["amenity"~"^(police|hospital|pharmacy|clinic|doctors|fire_station)\$"];
+  node(around:$boundedRadius,$latitude,$longitude)["healthcare"~"^(hospital|clinic|doctor|pharmacy)\$"];
+  way(around:$boundedRadius,$latitude,$longitude)["healthcare"~"^(hospital|clinic|doctor|pharmacy)\$"];
+  relation(around:$boundedRadius,$latitude,$longitude)["healthcare"~"^(hospital|clinic|doctor|pharmacy)\$"];
 );
 out center tags;
 ''';
@@ -41,11 +43,11 @@ out center tags;
               Uri.parse(endpoint),
               headers: const {
                 'Accept': 'application/json',
-                'User-Agent': 'ViraNari/1.8.1 live-map',
+                'User-Agent': 'ViraNari/1.8.2 safety-map',
               },
               body: {'data': query},
             )
-            .timeout(const Duration(seconds: 11));
+            .timeout(const Duration(seconds: 13));
         if (response.statusCode < 200 || response.statusCode >= 300) {
           lastError = 'OpenStreetMap lookup failed (${response.statusCode})';
           continue;
@@ -58,9 +60,10 @@ out center tags;
 
         for (final raw in elements) {
           if (raw is! Map<String, dynamic>) continue;
-          final tags = (raw['tags'] as Map?)?.cast<String, dynamic>() ?? const <String, dynamic>{};
-          final amenity = tags['amenity']?.toString();
-          if (amenity == null) continue;
+          final tags = (raw['tags'] as Map?)?.cast<String, dynamic>() ??
+              const <String, dynamic>{};
+          final sourceType = tags['amenity']?.toString() ?? tags['healthcare']?.toString();
+          if (sourceType == null) continue;
 
           double? lat;
           double? lon;
@@ -76,20 +79,24 @@ out center tags;
           }
           if (lat == null || lon == null) continue;
 
-          final distance = Geolocator.distanceBetween(latitude, longitude, lat, lon);
+          final distance =
+              Geolocator.distanceBetween(latitude, longitude, lat, lon);
           if (!distance.isFinite || distance > boundedRadius) continue;
-          final bearing = (Geolocator.bearingBetween(latitude, longitude, lat, lon) + 360) % 360;
+          final bearing =
+              (Geolocator.bearingBetween(latitude, longitude, lat, lon) + 360) %
+                  360;
 
           final type = raw['type']?.toString() ?? 'place';
-          final id = raw['id']?.toString() ?? '${lat.toStringAsFixed(5)}_${lon.toStringAsFixed(5)}';
+          final id = raw['id']?.toString() ??
+              '${lat.toStringAsFixed(5)}_${lon.toStringAsFixed(5)}';
           final dedupe = '$type:$id';
           if (!seen.add(dedupe)) continue;
 
           out.add(
             SafeNodePoint(
               id: 'osm:$type:$id',
-              name: _name(tags, amenity),
-              category: _category(amenity),
+              name: _name(tags, sourceType),
+              category: _category(sourceType),
               latitude: lat,
               longitude: lon,
               phoneE164: _phone(tags),
@@ -102,7 +109,24 @@ out center tags;
         }
 
         out.sort((a, b) => a.approxDistanceM.compareTo(b.approxDistanceM));
-        return out.take(100).toList(growable: false);
+
+        // Keep generous per-category buckets instead of a single global nearest
+        // cap. This prevents dense pharmacy/clinic data from crowding hospitals
+        // or police stations out of the Safety Map.
+        const categoryCaps = <String, int>{
+          'hospital': 90,
+          'police': 60,
+          'pharmacy': 90,
+          'staffed_place': 40,
+        };
+        final selected = <SafeNodePoint>[];
+        for (final entry in categoryCaps.entries) {
+          selected.addAll(
+            out.where((item) => item.category == entry.key).take(entry.value),
+          );
+        }
+        selected.sort((a, b) => a.approxDistanceM.compareTo(b.approxDistanceM));
+        return selected.toList(growable: false);
       } catch (e) {
         lastError = e;
       }
@@ -114,10 +138,10 @@ out center tags;
     return const [];
   }
 
-  String _name(Map<String, dynamic> tags, String amenity) {
+  String _name(Map<String, dynamic> tags, String type) {
     final explicit = tags['name']?.toString().trim();
     if (explicit != null && explicit.isNotEmpty) return explicit;
-    switch (amenity) {
+    switch (type) {
       case 'police':
         return 'Police station';
       case 'hospital':
@@ -126,6 +150,9 @@ out center tags;
         return 'Pharmacy';
       case 'clinic':
         return 'Clinic';
+      case 'doctor':
+      case 'doctors':
+        return 'Medical clinic';
       case 'fire_station':
         return 'Fire station';
       default:
@@ -133,12 +160,14 @@ out center tags;
     }
   }
 
-  String _category(String amenity) {
-    switch (amenity) {
+  String _category(String type) {
+    switch (type) {
       case 'police':
         return 'police';
       case 'hospital':
       case 'clinic':
+      case 'doctor':
+      case 'doctors':
         return 'hospital';
       case 'pharmacy':
         return 'pharmacy';
@@ -150,7 +179,8 @@ out center tags;
   }
 
   String? _phone(Map<String, dynamic> tags) {
-    final raw = tags['contact:phone']?.toString() ?? tags['phone']?.toString();
+    final raw =
+        tags['contact:phone']?.toString() ?? tags['phone']?.toString();
     if (raw == null || raw.trim().isEmpty) return null;
     return raw.trim();
   }

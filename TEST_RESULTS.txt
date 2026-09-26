@@ -1,2 +1,4 @@
-Backend tests: 37 passed
-Flutter SDK not available in packaging environment; run flutter analyze locally.
+ViraNari v1.8.2 backend validation
+- 37 backend tests passed
+- Python compileall passed
+- Flutter analyze/build must be run on the user machine (Flutter unavailable in packaging environment).

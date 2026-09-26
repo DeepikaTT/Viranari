@@ -1,7 +1,7 @@
 name: viranari_app
-description: ViraNari v1.8.1 Live Map + Responder Trail with real-time responder distance, ETA and incoming SOS overlay.
+description: ViraNari v1.8.2 Live Safety Map + GPS feed + notification-bar SOS alerts.
 publish_to: 'none'
-version: 1.8.1+41
+version: 1.8.2+42
 
 environment:
   sdk: '>=3.13.0 <4.0.0'

@@ -1,4 +1,4 @@
-# ViraNari V1.8.1 — Live Coordination
+# ViraNari V1.8.2 — Safety Map + Live GPS + Notifications
 
 V1.8 keeps the SOS, Silent Safety Session, Trusted Circle, Safety Map, Safety Compass, Open Map and Live Track core, then focuses on **live movement and responder coordination**. It intentionally does **not** add an emergency timeline and does **not** include CCTV/camera-surveillance features.
 
@@ -86,7 +86,7 @@ Health:
 curl http://127.0.0.1:3000/health
 ```
 
-Expected version: `1.8.1`.
+Expected version: `1.8.2`.
 
 Backend automated validation for this package: **36 tests passed**.
 

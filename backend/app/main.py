@@ -97,7 +97,7 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
 
     app = FastAPI(
         title="ViraNari API",
-        version="1.8.1",
+        version="1.8.2",
         description=(
             "Emergency-response API with consent-based trusted contacts, delivery receipts, "
             "idempotent offline retry, heartbeat-based live safety, silent safety sessions, "
@@ -220,7 +220,7 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "service": "viranari-api", "version": "1.8.1"}
+        return {"status": "ok", "service": "viranari-api", "version": "1.8.2"}
 
     @app.post("/auth/register", response_model=TokenOut, status_code=201)
     def register(payload: RegisterIn, db: Session = Depends(get_db)):

@@ -8,6 +8,7 @@ import '../core/session.dart';
 import '../core/storage.dart';
 import '../core/theme.dart';
 import '../services/location_service.dart';
+import '../services/notification_service.dart';
 import '../widgets/incoming_sos_overlay.dart';
 import 'contacts_screen.dart';
 import 'history_screen.dart';
@@ -26,12 +27,15 @@ class MainShell extends StatefulWidget {
 class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
   final SafetySettingsStore _safetySettings = SafetySettingsStore();
   final LocationService _location = LocationService();
+  final NotificationService _notifications = NotificationService();
   int _index = 0;
   Timer? _presenceTimer;
   Timer? _incomingTimer;
   bool _presenceUpdateRunning = false;
   bool _incomingPollRunning = false;
   bool _incomingDialogOpen = false;
+  String? _incomingNotificationAlertId;
+  bool _isForeground = true;
 
   @override
   void initState() {
@@ -45,13 +49,15 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
       const Duration(seconds: 3),
       (_) => unawaited(_checkIncomingSos()),
     );
+    unawaited(_notifications.requestPermission());
     unawaited(_publishPresenceIfEnabled());
     unawaited(_checkIncomingSos());
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
+    _isForeground = state == AppLifecycleState.resumed;
+    if (_isForeground) {
       unawaited(_publishPresenceIfEnabled());
       unawaited(_checkIncomingSos());
     }
@@ -96,7 +102,19 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
           break;
         }
       }
-      if (candidate == null || !mounted || _incomingDialogOpen) return;
+      if (candidate == null) {
+        final previous = _incomingNotificationAlertId;
+        if (previous != null) {
+          await _notifications.cancelIncomingSos(previous);
+          _incomingNotificationAlertId = null;
+        }
+        return;
+      }
+      if (_incomingNotificationAlertId != candidate.alertId) {
+        await _notifications.showIncomingSos(candidate);
+        _incomingNotificationAlertId = candidate.alertId;
+      }
+      if (!mounted || _incomingDialogOpen || !_isForeground) return;
       await _showIncomingSos(candidate);
     } catch (_) {
       // Incoming SOS polling is best effort; Inbox remains available manually.
@@ -118,6 +136,8 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
           alert: alert,
           onAccept: () async {
             await widget.session.api.acknowledge(alert.alertId);
+            await _notifications.cancelIncomingSos(alert.alertId);
+            _incomingNotificationAlertId = null;
             if (!mounted) return;
             Navigator.of(context, rootNavigator: true).pop();
             setState(() => _index = 2);

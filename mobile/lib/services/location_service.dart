@@ -43,8 +43,8 @@ class LocationService {
         distanceFilter: 0,
         intervalDuration: Duration(seconds: 5),
         foregroundNotificationConfig: ForegroundNotificationConfig(
-          notificationTitle: 'ViraNari emergency active',
-          notificationText: 'Sharing live location with your trusted circle.',
+          notificationTitle: 'ViraNari SOS ACTIVE',
+          notificationText: 'Live GPS is being shared with your Trusted Circle.',
           enableWakeLock: true,
           setOngoing: true,
         ),
