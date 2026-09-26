@@ -5,6 +5,7 @@ import '../core/api_client.dart';
 import '../core/models.dart';
 import '../core/session.dart';
 import '../core/theme.dart';
+import 'safe_reach_sheet.dart';
 
 class HistoryScreen extends StatefulWidget {
   const HistoryScreen({super.key, required this.session});
@@ -38,6 +39,19 @@ class _HistoryScreenState extends State<HistoryScreen> {
     } finally {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  Future<void> _showIncident(AlertRecord alert) async {
+    if (!mounted) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: ViraColors.surface,
+      showDragHandle: true,
+      builder: (_) => SafeReachSheet(session: widget.session, alertId: alert.id, canRematch: alert.isActive),
+    );
+    await _load();
   }
 
   Color _stateColor(AlertRecord alert) {
@@ -91,6 +105,16 @@ class _HistoryScreenState extends State<HistoryScreen> {
                             Text('${a.latitude.toStringAsFixed(5)}, ${a.longitude.toStringAsFixed(5)}'),
                             const SizedBox(height: 2),
                             Text('${a.acknowledgedCount}/${a.recipients.length} acknowledged · last update ${DateFormat('h:mm:ss a').format(a.updatedAt.toLocal())}', style: const TextStyle(color: ViraColors.mutedPlum, fontSize: 12)),
+                            if (a.safeReach != null) ...[
+                              const SizedBox(height: 4),
+                              Text('SafeReach · ${a.safeReach!.organizationName} · ${a.safeReach!.statusLabel}', style: const TextStyle(color: ViraColors.success, fontSize: 12, fontWeight: FontWeight.w800)),
+                            ],
+                            const SizedBox(height: 8),
+                            OutlinedButton.icon(
+                              onPressed: () => _showIncident(a),
+                              icon: const Icon(Icons.verified_user_outlined, size: 18),
+                              label: const Text('Incident proof & responder'),
+                            ),
                           ],
                         ),
                       ),

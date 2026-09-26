@@ -581,6 +581,166 @@ def test_32_create_app_upgrades_existing_alert_schema_before_indexes(tmp_path):
 
     conn = sqlite3.connect(db_path)
     cols = {row[1] for row in conn.execute("PRAGMA table_info(alerts)")}
+    user_cols = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     conn.close()
     assert {"last_device_seen_at", "last_gps_fix_at", "last_location_sync_at"}.issubset(cols)
+    assert "role" in user_cols
+    assert {"responder_profiles", "responder_assignments", "incident_events"}.issubset(tables)
+
+
+def _verified_responder(client, email="guard@example.com", lat=17.386, lon=78.487):
+    responder = register(client, "Campus Guard", email, phone_e164="+919876543210")
+    verified = client.post(
+        "/admin/responders/verify",
+        headers={"X-ViraNari-Admin-Key": "test-admin-key"},
+        json={
+            "user_email": email,
+            "organization_name": "Campus Security Gate 2",
+            "category": "campus_security",
+            "service_radius_m": 5000,
+            "latitude": lat,
+            "longitude": lon,
+            "is_available": True,
+        },
+    )
+    assert verified.status_code == 200, verified.text
+    return responder, verified.json()
+
+
+def test_29_safe_reach_auto_matches_verified_nearby_responder(client):
+    responder, profile = _verified_responder(client)
+    owner, contact, _ = _pair(client)
+    alert = _alert(client, owner, "safe-reach-0001")
+    assert alert.status_code == 201, alert.text
+    assignment = alert.json()["safe_reach"]
+    assert assignment is not None
+    assert assignment["organization_name"] == "Campus Security Gate 2"
+    assert assignment["state"] == "offered"
+    assert assignment["distance_m"] < 5000
+
+    inbox = client.get("/alerts/inbox", headers=auth(contact["access_token"]))
+    assert inbox.status_code == 200
+    assert inbox.json()[0]["safe_reach"]["organization_name"] == "Campus Security Gate 2"
+
+    incidents = client.get("/responders/incidents", headers=auth(responder["access_token"]))
+    assert incidents.status_code == 200
+    assert incidents.json()[0]["alert_id"] == alert.json()["id"]
+
+
+def test_30_responder_status_transitions_and_proofchain_verify(client):
+    responder, _ = _verified_responder(client)
+    owner, contact, _ = _pair(client)
+    alert = _alert(client, owner, "safe-reach-0002").json()
+
+    accepted = client.post(f"/responders/incidents/{alert['id']}/accept", headers=auth(responder["access_token"]))
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["state"] == "accepted"
+
+    arrived = client.post(f"/responders/incidents/{alert['id']}/arrive", headers=auth(responder["access_token"]))
+    assert arrived.status_code == 200, arrived.text
+    assert arrived.json()["state"] == "arrived"
+
+    proof = client.get(f"/alerts/{alert['id']}/proof", headers=auth(contact["access_token"]))
+    assert proof.status_code == 200, proof.text
+    types = [e["event_type"] for e in proof.json()["events"]]
+    assert "SOS_CREATED" in types
+    assert "SAFE_REACH_RESPONDER_MATCHED" in types
+    assert "SAFE_REACH_ACCEPTED" in types
+    assert "SAFE_REACH_ARRIVED" in types
+
+    verified = client.get(f"/alerts/{alert['id']}/proof/verify", headers=auth(owner["access_token"]))
+    assert verified.status_code == 200, verified.text
+    assert verified.json()["valid"] is True
+    assert verified.json()["hash_chain_valid"] is True
+    assert verified.json()["signatures_valid"] is True
+    assert verified.json()["event_count"] >= 5
+
+
+def test_31_unverified_user_cannot_use_responder_console(client):
+    user = register(client, "Random User", "random@example.com")
+    r = client.get("/responders/me", headers=auth(user["access_token"]))
+    assert r.status_code == 403
+
+
+def test_32_admin_key_required_for_responder_verification(client):
+    register(client, "Guard", "guard2@example.com")
+    r = client.post(
+        "/admin/responders/verify",
+        json={
+            "user_email": "guard2@example.com",
+            "organization_name": "Security Desk",
+            "category": "security",
+            "service_radius_m": 3000,
+            "latitude": 17.385,
+            "longitude": 78.4867,
+            "is_available": True,
+        },
+    )
+    assert r.status_code == 403
+
+
+def test_33_proofchain_detects_database_tamper(client):
+    owner = register(client, "Asha", "asha@example.com")
+    alert = _alert(client, owner, "proof-tamper-01").json()
+    app = client.app
+    SessionLocal = app.state.SessionLocal
+    from app.models import IncidentEvent
+    from sqlalchemy import select
+    with SessionLocal() as db:
+        event = db.scalar(select(IncidentEvent).where(IncidentEvent.alert_id == alert["id"]).order_by(IncidentEvent.sequence.asc()))
+        event.payload_json = '{"recipient_count":999}'
+        db.commit()
+    verified = client.get(f"/alerts/{alert['id']}/proof/verify", headers=auth(owner["access_token"]))
+    assert verified.status_code == 200
+    assert verified.json()["valid"] is False
+    assert verified.json()["hash_chain_valid"] is False
+
+
+def test_34_decline_automatically_rematches_without_leaking_new_assignment(client):
+    responder1, _ = _verified_responder(client, email="guard1@example.com", lat=17.3852, lon=78.4868)
+    responder2, _ = _verified_responder(client, email="guard2@example.com", lat=17.3865, lon=78.4880)
+    owner = register(client, "Asha", "asha@example.com")
+    alert = _alert(client, owner, "safe-rematch-01").json()
+    first_profile = alert["safe_reach"]["responder_profile_id"]
+
+    first_token = responder1["access_token"] if client.get("/responders/incidents", headers=auth(responder1["access_token"])).json() else responder2["access_token"]
+    first_incidents = client.get("/responders/incidents", headers=auth(first_token)).json()
+    assert first_incidents
+    declined = client.post(f"/responders/incidents/{alert['id']}/decline", headers=auth(first_token))
+    assert declined.status_code == 200, declined.text
+    assert declined.json()["state"] == "declined"
+    assert declined.json()["responder_profile_id"] == first_profile
+
+    refreshed = client.get(f"/alerts/detail/{alert['id']}", headers=auth(owner["access_token"])).json()
+    assert refreshed["safe_reach"] is not None
+    assert refreshed["safe_reach"]["responder_profile_id"] != first_profile
+    assert refreshed["safe_reach"]["state"] == "offered"
+
+
+def test_35_unanswered_offer_expires_and_escalates_to_next_responder(tmp_path):
+    cfg = Settings(
+        database_path=str(tmp_path / "escalation.db"),
+        jwt_secret="escalation-secret-0123456789-0123456789",
+        admin_key="test-admin-key",
+        proof_key_path=str(tmp_path / "proof.pem"),
+        responder_offer_timeout_seconds=0,
+    )
+    with TestClient(create_app(database_path=cfg.database_path, settings=cfg)) as c:
+        r1, _ = _verified_responder(c, email="first@example.com", lat=17.3851, lon=78.4868)
+        r2, _ = _verified_responder(c, email="second@example.com", lat=17.3865, lon=78.4880)
+        owner = register(c, "Asha", "asha@example.com")
+        alert = _alert(c, owner, "safe-timeout-01").json()
+        first_profile = alert["safe_reach"]["responder_profile_id"]
+        heartbeat = c.post(
+            f"/alerts/{alert['id']}/heartbeat",
+            headers=auth(owner["access_token"]),
+            json={"network_state": "mobile"},
+        )
+        assert heartbeat.status_code == 200, heartbeat.text
+        second = heartbeat.json()["safe_reach"]
+        assert second is not None
+        assert second["responder_profile_id"] != first_profile
+        proof = c.get(f"/alerts/{alert['id']}/proof", headers=auth(owner["access_token"])).json()
+        types = [e["event_type"] for e in proof["events"]]
+        assert "SAFE_REACH_OFFER_EXPIRED" in types

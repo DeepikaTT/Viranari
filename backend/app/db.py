@@ -58,6 +58,14 @@ def apply_compat_migrations(engine) -> None:
         if "users" in tables and "phone_e164" not in columns("users"):
             conn.execute(text("ALTER TABLE users ADD COLUMN phone_e164 VARCHAR(16)"))
 
+        # V1.5 role-based responder access. Existing users remain travelers.
+        if "users" in tables:
+            user_cols = columns("users")
+            if "role" not in user_cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR(24) NOT NULL DEFAULT 'traveler'"))
+            conn.execute(text("UPDATE users SET role = 'traveler' WHERE role IS NULL OR role = ''"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_role ON users (role)"))
+
         # V1 -> V1.2 alert-session fields. Older databases may have only the
         # one-shot SOS columns, and SQLAlchemy create_all() does not ALTER them.
         if "alerts" in tables:
@@ -123,7 +131,7 @@ def apply_compat_migrations(engine) -> None:
 
         now = datetime.now(timezone.utc).isoformat()
         conn.execute(
-            text("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (141, :now)"),
+            text("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (150, :now)"),
             {"now": now},
         )
 

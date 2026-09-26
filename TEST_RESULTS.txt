@@ -1,15 +1,30 @@
-ViraNari V1.4.4 validation
+ViraNari V1.5.0 packaging validation
+====================================
 
-Backend:
-- 28 automated tests passed.
+Backend pytest: 35 passed
+- Existing V1.4.4 API regression tests preserved.
+- SafeReach auto-matching test passed.
+- Responder accept/arrive state tests passed.
+- Responder authorization/admin verification tests passed.
+- ProofChain verification test passed.
+- Deliberate database tamper detection test passed.
 
-Mobile source checks:
-- V1.2 UI screens restored.
-- V1.4 tracking/location service retained.
-- No flutter_map / latlong2 dependency.
-- No dedicated Live Tracking map screen.
-- No SMS permission/native SMS implementation.
-- No Nearby/Safety Presence UI.
-- No Journey Guard UI.
+Manual backend integration smoke test:
+- Traveler SOS matched a nearby verified responder.
+- Responder accepted assignment.
+- Proof export independently verified using backend/tools/verify_proof_export.py.
+- External verifier result: VALID.
 
-Flutter SDK is not installed in the packaging environment; run `flutter analyze` and a physical-device build on the Arch development machine.
+Mobile source validation in packaging environment:
+- All local Dart imports resolve to existing files.
+- Basic delimiter/source-tree consistency checks passed.
+- Flutter SDK is not installed in the packaging environment, therefore flutter analyze / Android APK compilation were NOT claimed here.
+
+Required on developer machine before release:
+  ./scripts/prepare_mobile.fish
+  cd mobile
+  flutter clean
+  rm -rf .dart_tool build
+  flutter pub get
+  flutter analyze
+  flutter build apk --release --dart-define=VIRANARI_API_BASE=https://YOUR_API_DOMAIN --dart-define=VIRANARI_EMERGENCY_NUMBER=112

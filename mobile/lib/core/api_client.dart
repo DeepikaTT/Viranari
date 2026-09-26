@@ -233,5 +233,46 @@ class ApiClient {
 
   Future<void> acknowledge(String alertId) async => _post('/alerts/$alertId/acknowledge', const {});
 
+  Future<ProofChain> proofChain(String alertId) async =>
+      ProofChain.fromJson(await _get('/alerts/$alertId/proof') as Map<String, dynamic>);
+
+  Future<ProofVerification> verifyProof(String alertId) async =>
+      ProofVerification.fromJson(await _get('/alerts/$alertId/proof/verify') as Map<String, dynamic>);
+
+  Future<AlertRecord> rematchSafeReach(String alertId) async =>
+      AlertRecord.fromJson(await _post('/alerts/$alertId/safe-reach/rematch', const {}));
+
+  Future<ResponderProfile> responderMe() async =>
+      ResponderProfile.fromJson(await _get('/responders/me') as Map<String, dynamic>);
+
+  Future<ResponderProfile> updateResponderStatus({
+    required double latitude,
+    required double longitude,
+    required bool isAvailable,
+    int? serviceRadiusM,
+  }) async =>
+      ResponderProfile.fromJson(await _patch('/responders/me/status', {
+        'latitude': latitude,
+        'longitude': longitude,
+        'is_available': isAvailable,
+        'service_radius_m': serviceRadiusM,
+      }));
+
+  Future<List<ResponderIncident>> responderIncidents() async =>
+      (await _get('/responders/incidents') as List<dynamic>)
+          .map((e) => ResponderIncident.fromJson(e as Map<String, dynamic>))
+          .toList();
+
+  Future<SafeReachAssignment> responderAccept(String alertId) async =>
+      SafeReachAssignment.fromJson(await _post('/responders/incidents/$alertId/accept', const {}));
+
+  Future<SafeReachAssignment> responderArrive(String alertId) async =>
+      SafeReachAssignment.fromJson(await _post('/responders/incidents/$alertId/arrive', const {}));
+
+  Future<SafeReachAssignment> responderComplete(String alertId) async =>
+      SafeReachAssignment.fromJson(await _post('/responders/incidents/$alertId/complete', const {}));
+
+  Future<SafeReachAssignment> responderDecline(String alertId) async =>
+      SafeReachAssignment.fromJson(await _post('/responders/incidents/$alertId/decline', const {}));
 
 }

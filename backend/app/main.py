@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+import math
 import secrets
 from collections import defaultdict, deque
 from threading import Lock
@@ -8,7 +10,7 @@ from time import monotonic
 from datetime import datetime, timedelta, timezone
 
 import jwt
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import and_, select
@@ -24,6 +26,9 @@ from .models import (
     AlertRecipient,
     AlertState,
     ContactStatus,
+    IncidentEvent,
+    ResponderAssignment,
+    ResponderProfile,
     TrustedContact,
     User,
     utcnow,
@@ -44,11 +49,21 @@ from .schemas import (
     LoginIn,
     MessageOut,
     PhoneUpdateIn,
+    ProofChainOut,
+    ProofEventOut,
+    ProofPublicKeyOut,
+    ProofVerificationOut,
     RecipientStatusOut,
     RegisterIn,
+    ResponderAssignmentOut,
+    ResponderIncidentOut,
+    ResponderProfileOut,
+    ResponderProfileUpdateIn,
+    ResponderVerifyIn,
     TokenOut,
     UserOut,
 )
+from .proofchain import ProofSigner, canonical_json, sha256_hex
 from .security import create_access_token, decode_access_token, hash_password, verify_password
 
 bearer = HTTPBearer(auto_error=False)
@@ -86,15 +101,17 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
 
     app = FastAPI(
         title="ViraNari API",
-        version="1.4.4",
+        version="1.5.0",
         description=(
-            "Emergency-response API with consent-based trusted contacts, delivery receipts, "
-            "idempotent offline retry, heartbeat-based live safety, continuous location tracking, and reconnect recovery."
+            "ViraNari emergency-response API preserving V1.4.4 live tracking and timeline, "
+            "with SafeReach verified responder routing and Ed25519-signed ProofChain incident logs."
         ),
     )
     app.state.engine = engine
     app.state.SessionLocal = SessionLocal
     app.state.settings = cfg
+    signer = ProofSigner(cfg.proof_key_path)
+    app.state.proof_signer = signer
     limiter = SlidingWindowLimiter()
 
     app.add_middleware(
@@ -135,7 +152,7 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
         return value.astimezone(timezone.utc)
 
     def user_out(user: User) -> UserOut:
-        return UserOut(id=user.id, name=user.name, email=user.email, phone_e164=user.phone_e164)
+        return UserOut(id=user.id, name=user.name, email=user.email, phone_e164=user.phone_e164, role=user.role or "traveler")
 
     def contact_out(db: Session, contact: TrustedContact, include_token: bool = False) -> ContactOut:
         target = db.get(User, contact.contact_user_id)
@@ -153,6 +170,52 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
             accepted_at=ensure_utc(contact.accepted_at),
         )
 
+    def responder_profile_out(db: Session, profile: ResponderProfile) -> ResponderProfileOut:
+        user = db.get(User, profile.user_id)
+        return ResponderProfileOut(
+            id=profile.id,
+            user_id=profile.user_id,
+            responder_name=user.name if user else "Verified responder",
+            organization_name=profile.organization_name,
+            category=profile.category,
+            verification_status=profile.verification_status,
+            is_available=profile.is_available,
+            service_radius_m=profile.service_radius_m,
+            latitude=profile.latitude,
+            longitude=profile.longitude,
+            last_seen_at=ensure_utc(profile.last_seen_at),
+        )
+
+    def current_assignment(db: Session, alert_id: str) -> ResponderAssignment | None:
+        return db.scalar(
+            select(ResponderAssignment)
+            .where(ResponderAssignment.alert_id == alert_id)
+            .order_by(ResponderAssignment.offered_at.desc())
+            .limit(1)
+        )
+
+    def responder_assignment_out(db: Session, assignment: ResponderAssignment | None) -> ResponderAssignmentOut | None:
+        if assignment is None:
+            return None
+        profile = db.get(ResponderProfile, assignment.responder_profile_id)
+        if profile is None:
+            return None
+        user = db.get(User, profile.user_id)
+        return ResponderAssignmentOut(
+            assignment_id=assignment.id,
+            responder_profile_id=profile.id,
+            responder_name=user.name if user else "Verified responder",
+            organization_name=profile.organization_name,
+            category=profile.category,
+            phone_e164=user.phone_e164 if user else None,
+            state=assignment.state,
+            distance_m=assignment.distance_m,
+            offered_at=ensure_utc(assignment.offered_at),
+            accepted_at=ensure_utc(assignment.accepted_at),
+            arrived_at=ensure_utc(assignment.arrived_at),
+            completed_at=ensure_utc(assignment.completed_at),
+        )
+
     def alert_query():
         return select(Alert).options(joinedload(Alert.recipients), joinedload(Alert.locations))
 
@@ -160,6 +223,139 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
         if alert.owner_id == user_id:
             return True
         return any(r.recipient_user_id == user_id and r.is_active for r in alert.recipients)
+
+    def assigned_responder_can_view(db: Session, alert_id: str, user_id: str) -> bool:
+        assignment = current_assignment(db, alert_id)
+        if assignment is None:
+            return False
+        profile = db.get(ResponderProfile, assignment.responder_profile_id)
+        return profile is not None and profile.user_id == user_id
+
+    def can_view_alert_with_db(db: Session, alert: Alert, user_id: str) -> bool:
+        return can_view_alert(alert, user_id) or assigned_responder_can_view(db, alert.id, user_id)
+
+    def append_incident_event(
+        db: Session,
+        *,
+        alert_id: str,
+        event_type: str,
+        actor_type: str = "system",
+        actor_user_id: str | None = None,
+        payload: dict | None = None,
+    ) -> IncidentEvent:
+        latest = db.scalar(
+            select(IncidentEvent)
+            .where(IncidentEvent.alert_id == alert_id)
+            .order_by(IncidentEvent.sequence.desc())
+            .limit(1)
+        )
+        sequence = 1 if latest is None else latest.sequence + 1
+        previous_hash = "0" * 64 if latest is None else latest.event_hash
+        created_at = utcnow()
+        normalized_payload = payload or {}
+        body = {
+            "alert_id": alert_id,
+            "sequence": sequence,
+            "event_type": event_type,
+            "actor_type": actor_type,
+            "actor_user_id": actor_user_id,
+            "payload": normalized_payload,
+            "previous_hash": previous_hash,
+            "created_at": created_at.isoformat(),
+        }
+        event_hash = sha256_hex(canonical_json(body))
+        event = IncidentEvent(
+            alert_id=alert_id,
+            sequence=sequence,
+            event_type=event_type,
+            actor_type=actor_type,
+            actor_user_id=actor_user_id,
+            payload_json=canonical_json(normalized_payload),
+            previous_hash=previous_hash,
+            event_hash=event_hash,
+            signature=signer.sign_hash(event_hash),
+            key_id=signer.key_id,
+            created_at=created_at,
+        )
+        db.add(event)
+        db.flush()
+        return event
+
+    def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+        radius = 6371000.0
+        p1 = math.radians(lat1)
+        p2 = math.radians(lat2)
+        dp = math.radians(lat2 - lat1)
+        dl = math.radians(lon2 - lon1)
+        a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+        return 2 * radius * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+    def match_nearest_responder(db: Session, alert: Alert, *, reason: str = "automatic") -> ResponderAssignment | None:
+        existing = current_assignment(db, alert.id)
+        if existing is not None and existing.state not in {"declined", "completed", "cancelled", "expired"}:
+            return existing
+        excluded = set(
+            db.scalars(
+                select(ResponderAssignment.responder_profile_id).where(ResponderAssignment.alert_id == alert.id)
+            ).all()
+        )
+
+        cutoff = utcnow() - timedelta(minutes=cfg.responder_location_ttl_minutes)
+        profiles = db.scalars(
+            select(ResponderProfile).where(
+                and_(
+                    ResponderProfile.verification_status == "verified",
+                    ResponderProfile.is_available.is_(True),
+                    ResponderProfile.latitude.is_not(None),
+                    ResponderProfile.longitude.is_not(None),
+                    ResponderProfile.last_seen_at.is_not(None),
+                    ResponderProfile.last_seen_at >= cutoff,
+                )
+            )
+        ).all()
+        best: tuple[ResponderProfile, float] | None = None
+        for profile in profiles:
+            if profile.id in excluded or profile.user_id == alert.owner_id:
+                continue
+            distance = haversine_m(alert.latitude, alert.longitude, profile.latitude, profile.longitude)
+            if distance > profile.service_radius_m:
+                continue
+            if best is None or distance < best[1]:
+                best = (profile, distance)
+
+        if best is None:
+            append_incident_event(
+                db, alert_id=alert.id, event_type="SAFE_REACH_NO_RESPONDER",
+                payload={"reason": reason, "search_ttl_minutes": cfg.responder_location_ttl_minutes},
+            )
+            return None
+
+        profile, distance = best
+        now = utcnow()
+        assignment = ResponderAssignment(
+            alert_id=alert.id, responder_profile_id=profile.id, state="offered",
+            distance_m=distance, offered_at=now,
+        )
+        db.add(assignment)
+        db.flush()
+        append_incident_event(
+            db, alert_id=alert.id, event_type="SAFE_REACH_RESPONDER_MATCHED",
+            payload={
+                "reason": reason,
+                "responder_profile_id": profile.id,
+                "organization_name": profile.organization_name,
+                "category": profile.category,
+                "distance_m": round(distance, 1),
+            },
+        )
+        return assignment
+
+    def proof_event_out(event: IncidentEvent) -> ProofEventOut:
+        return ProofEventOut(
+            id=event.id, sequence=event.sequence, event_type=event.event_type, actor_type=event.actor_type,
+            actor_user_id=event.actor_user_id, payload=json.loads(event.payload_json), previous_hash=event.previous_hash,
+            event_hash=event.event_hash, signature=event.signature, key_id=event.key_id, created_at=ensure_utc(event.created_at),
+        )
 
     def audit(db: Session, event_type: str, actor_user_id: str | None, resource_id: str | None = None, detail: str | None = None) -> None:
         db.add(AuditEvent(actor_user_id=actor_user_id, event_type=event_type, resource_id=resource_id, detail=detail))
@@ -201,12 +397,13 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
             last_device_seen_at=ensure_utc(alert.last_device_seen_at),
             last_gps_fix_at=ensure_utc(alert.last_gps_fix_at),
             last_location_sync_at=ensure_utc(alert.last_location_sync_at),
+            safe_reach=responder_assignment_out(db, current_assignment(db, alert.id)),
             recipients=recipients,
         )
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "service": "viranari-api", "version": "1.4.4"}
+        return {"status": "ok", "service": "viranari-api", "version": "1.5.0", "safe_reach": True, "proofchain": "ed25519-sha256"}
 
     @app.post("/auth/register", response_model=TokenOut, status_code=201)
     def register(payload: RegisterIn, db: Session = Depends(get_db)):
@@ -398,6 +595,23 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
             db.add(AlertRecipient(alert_id=alert.id, recipient_user_id=c.contact_user_id))
 
         audit(db, "sos_created_test" if payload.is_test else "sos_created", current.id, alert.id, f"recipients={len(active_contacts)}")
+        append_incident_event(
+            db, alert_id=alert.id, event_type="SOS_CREATED_TEST" if payload.is_test else "SOS_CREATED",
+            actor_type="traveler", actor_user_id=current.id,
+            payload={
+                "recipient_count": len(active_contacts),
+                "latitude": round(payload.latitude, 6),
+                "longitude": round(payload.longitude, 6),
+                "accuracy_m": payload.accuracy_m,
+                "network_state": payload.network_state,
+            },
+        )
+        append_incident_event(
+            db, alert_id=alert.id, event_type="TRUSTED_CIRCLE_NOTIFIED",
+            payload={"recipient_count": len(active_contacts)},
+        )
+        # Test drills can exercise the complete SafeReach flow without claiming a real emergency.
+        match_nearest_responder(db, alert, reason="test_drill" if payload.is_test else "sos_created")
         logger.info("sos_created user=%s alert=%s recipients=%s test=%s", current.id, alert.id, len(active_contacts), payload.is_test)
         db.commit()
         result = db.scalar(alert_query().where(Alert.id == alert.id))
@@ -443,7 +657,7 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
         alert = db.scalar(alert_query().where(Alert.id == alert_id))
         if not alert:
             raise HTTPException(status_code=404, detail="Alert not found")
-        if not can_view_alert(alert, current.id):
+        if not can_view_alert_with_db(db, alert, current.id):
             raise HTTPException(status_code=403, detail="Not allowed to view this alert")
         return alert_out(db, alert)
 
@@ -483,6 +697,10 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
                 heading_deg=payload.heading_deg,
                 recorded_at=now,
             )
+        )
+        append_incident_event(
+            db, alert_id=alert.id, event_type="LOCATION_FIX_STORED", actor_type="device", actor_user_id=current.id,
+            payload={"latitude": round(payload.latitude, 6), "longitude": round(payload.longitude, 6), "accuracy_m": payload.accuracy_m},
         )
         db.commit()
         result = db.scalar(alert_query().where(Alert.id == alert.id))
@@ -541,6 +759,10 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
             alert.last_device_seen_at = now
             alert.last_gps_fix_at = latest_recorded
             alert.last_location_sync_at = now
+            append_incident_event(
+                db, alert_id=alert.id, event_type="OFFLINE_LOCATION_BATCH_REPLAYED", actor_type="device", actor_user_id=current.id,
+                payload={"accepted": accepted, "latest_recorded_at": latest_recorded.isoformat() if latest_recorded else None},
+            )
 
         db.commit()
         return AlertLocationBatchOut(accepted=accepted)
@@ -570,6 +792,19 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
             gps_time = ensure_utc(payload.last_gps_fix_at)
             if gps_time <= now + timedelta(minutes=5):
                 alert.last_gps_fix_at = gps_time
+
+        # Industry-style escalation: an unanswered responder offer expires and
+        # the next eligible verified responder is tried automatically.
+        assignment = current_assignment(db, alert.id)
+        if assignment is not None and assignment.state == "offered":
+            offered_at = ensure_utc(assignment.offered_at)
+            if offered_at is not None and now - offered_at >= timedelta(seconds=cfg.responder_offer_timeout_seconds):
+                assignment.state = "expired"
+                append_incident_event(
+                    db, alert_id=alert.id, event_type="SAFE_REACH_OFFER_EXPIRED",
+                    payload={"assignment_id": assignment.id, "timeout_seconds": cfg.responder_offer_timeout_seconds},
+                )
+                match_nearest_responder(db, alert, reason="offer_timeout")
         db.commit()
         result = db.scalar(alert_query().where(Alert.id == alert.id))
         return alert_out(db, result)
@@ -583,7 +818,7 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
         alert = db.scalar(alert_query().where(Alert.id == alert_id))
         if not alert:
             raise HTTPException(status_code=404, detail="Alert not found")
-        if not can_view_alert(alert, current.id):
+        if not can_view_alert_with_db(db, alert, current.id):
             raise HTTPException(status_code=403, detail="Not allowed to view this alert")
         locations = db.scalars(
             select(AlertLocation)
@@ -618,6 +853,21 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
         else:
             alert.resolved_at = now
         audit(db, f"sos_{target_state.value}", current.id, alert.id, None)
+        append_incident_event(
+            db, alert_id=alert.id, event_type=f"SOS_{target_state.value.upper()}",
+            actor_type="traveler", actor_user_id=current.id, payload={"state": target_state.value},
+        )
+        assignment = current_assignment(db, alert.id)
+        if assignment is not None:
+            profile = db.get(ResponderProfile, assignment.responder_profile_id)
+            if profile is not None:
+                profile.is_available = True
+                profile.updated_at = now
+            if target_state is AlertState.resolved and assignment.state != "completed":
+                assignment.state = "completed"
+                assignment.completed_at = now
+            elif target_state is AlertState.cancelled and assignment.state not in {"completed", "declined"}:
+                assignment.state = "cancelled"
         logger.info("sos_%s user=%s alert=%s", target_state.value, current.id, alert.id)
         db.commit()
         result = db.scalar(alert_query().where(Alert.id == alert.id))
@@ -654,6 +904,10 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
         for recipient, alert, sender in rows:
             if recipient.delivered_at is None:
                 recipient.delivered_at = now
+                append_incident_event(
+                    db, alert_id=alert.id, event_type="TRUSTED_CONTACT_DELIVERY_CONFIRMED",
+                    actor_type="trusted_contact", actor_user_id=current.id, payload={"recipient_user_id": current.id},
+                )
                 changed = True
             out.append(
                 InboxAlertOut(
@@ -676,6 +930,7 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
                     last_device_seen_at=ensure_utc(alert.last_device_seen_at),
                     last_gps_fix_at=ensure_utc(alert.last_gps_fix_at),
                     last_location_sync_at=ensure_utc(alert.last_location_sync_at),
+                    safe_reach=responder_assignment_out(db, current_assignment(db, alert.id)),
                 )
             )
         if changed:
@@ -704,8 +959,242 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
         if recipient.acknowledged_at is None:
             recipient.acknowledged_at = utcnow()
         audit(db, "sos_acknowledged", current.id, alert_id, None)
+        append_incident_event(
+            db, alert_id=alert_id, event_type="TRUSTED_CONTACT_ACKNOWLEDGED",
+            actor_type="trusted_contact", actor_user_id=current.id, payload={"recipient_user_id": current.id},
+        )
         db.commit()
         return MessageOut(message="Alert acknowledged")
+
+    @app.get("/proof/public-key", response_model=ProofPublicKeyOut)
+    def proof_public_key():
+        return ProofPublicKeyOut(key_id=signer.key_id, public_key_b64=signer.public_key_b64())
+
+    @app.get("/alerts/{alert_id}/proof", response_model=ProofChainOut)
+    def incident_proof(
+        alert_id: str, current: User = Depends(get_current_user), db: Session = Depends(get_db),
+    ):
+        alert = db.scalar(alert_query().where(Alert.id == alert_id))
+        if not alert:
+            raise HTTPException(status_code=404, detail="Alert not found")
+        if not can_view_alert_with_db(db, alert, current.id):
+            raise HTTPException(status_code=403, detail="Not allowed to view this incident proof")
+        events = db.scalars(
+            select(IncidentEvent).where(IncidentEvent.alert_id == alert_id).order_by(IncidentEvent.sequence.asc())
+        ).all()
+        return ProofChainOut(
+            alert_id=alert_id, key_id=signer.key_id, public_key_b64=signer.public_key_b64(),
+            events=[proof_event_out(e) for e in events],
+        )
+
+    @app.get("/alerts/{alert_id}/proof/verify", response_model=ProofVerificationOut)
+    def verify_incident_proof(
+        alert_id: str, current: User = Depends(get_current_user), db: Session = Depends(get_db),
+    ):
+        alert = db.scalar(alert_query().where(Alert.id == alert_id))
+        if not alert:
+            raise HTTPException(status_code=404, detail="Alert not found")
+        if not can_view_alert_with_db(db, alert, current.id):
+            raise HTTPException(status_code=403, detail="Not allowed to verify this incident proof")
+        events = db.scalars(
+            select(IncidentEvent).where(IncidentEvent.alert_id == alert_id).order_by(IncidentEvent.sequence.asc())
+        ).all()
+        expected_prev = "0" * 64
+        hash_valid = True
+        sig_valid = True
+        first_invalid: int | None = None
+        for event in events:
+            created = ensure_utc(event.created_at)
+            body = {
+                "alert_id": alert_id,
+                "sequence": event.sequence,
+                "event_type": event.event_type,
+                "actor_type": event.actor_type,
+                "actor_user_id": event.actor_user_id,
+                "payload": json.loads(event.payload_json),
+                "previous_hash": event.previous_hash,
+                "created_at": created.isoformat(),
+            }
+            calculated = sha256_hex(canonical_json(body))
+            row_hash_ok = event.previous_hash == expected_prev and calculated == event.event_hash
+            row_sig_ok = signer.verify_hash(event.event_hash, event.signature) and event.key_id == signer.key_id
+            if not row_hash_ok:
+                hash_valid = False
+            if not row_sig_ok:
+                sig_valid = False
+            if first_invalid is None and (not row_hash_ok or not row_sig_ok):
+                first_invalid = event.sequence
+            expected_prev = event.event_hash
+        return ProofVerificationOut(
+            alert_id=alert_id, valid=hash_valid and sig_valid, event_count=len(events),
+            hash_chain_valid=hash_valid, signatures_valid=sig_valid, key_id=signer.key_id,
+            first_invalid_sequence=first_invalid,
+        )
+
+    def require_admin_key(x_viranari_admin_key: str | None = Header(default=None)) -> None:
+        if not cfg.admin_key:
+            raise HTTPException(status_code=503, detail="Responder administration is not configured")
+        if not x_viranari_admin_key or not secrets.compare_digest(x_viranari_admin_key, cfg.admin_key):
+            raise HTTPException(status_code=403, detail="Invalid responder administration key")
+
+    @app.post("/admin/responders/verify", response_model=ResponderProfileOut)
+    def verify_responder(
+        payload: ResponderVerifyIn,
+        _: None = Depends(require_admin_key),
+        db: Session = Depends(get_db),
+    ):
+        user = db.scalar(select(User).where(User.email == payload.user_email.lower().strip()))
+        if not user:
+            raise HTTPException(status_code=404, detail="Responder user must register first")
+        profile = db.scalar(select(ResponderProfile).where(ResponderProfile.user_id == user.id))
+        now = utcnow()
+        if profile is None:
+            profile = ResponderProfile(
+                user_id=user.id, organization_name=payload.organization_name.strip(), category=payload.category.strip(),
+                verification_status="verified", verified_at=now, is_available=payload.is_available,
+                service_radius_m=payload.service_radius_m, latitude=payload.latitude, longitude=payload.longitude,
+                last_seen_at=now if payload.latitude is not None and payload.longitude is not None else None, updated_at=now,
+            )
+            db.add(profile)
+        else:
+            profile.organization_name = payload.organization_name.strip()
+            profile.category = payload.category.strip()
+            profile.verification_status = "verified"
+            profile.verified_at = now
+            profile.is_available = payload.is_available
+            profile.service_radius_m = payload.service_radius_m
+            profile.latitude = payload.latitude
+            profile.longitude = payload.longitude
+            if payload.latitude is not None and payload.longitude is not None:
+                profile.last_seen_at = now
+            profile.updated_at = now
+        user.role = "responder"
+        db.commit()
+        db.refresh(profile)
+        return responder_profile_out(db, profile)
+
+    def require_responder(current: User, db: Session) -> ResponderProfile:
+        profile = db.scalar(select(ResponderProfile).where(ResponderProfile.user_id == current.id))
+        if current.role != "responder" or profile is None or profile.verification_status != "verified":
+            raise HTTPException(status_code=403, detail="Verified responder access required")
+        return profile
+
+    @app.get("/responders/me", response_model=ResponderProfileOut)
+    def responder_me(current: User = Depends(get_current_user), db: Session = Depends(get_db)):
+        return responder_profile_out(db, require_responder(current, db))
+
+    @app.patch("/responders/me/status", response_model=ResponderProfileOut)
+    def responder_update_status(
+        payload: ResponderProfileUpdateIn, current: User = Depends(get_current_user), db: Session = Depends(get_db),
+    ):
+        profile = require_responder(current, db)
+        profile.latitude = payload.latitude
+        profile.longitude = payload.longitude
+        profile.is_available = payload.is_available
+        if payload.service_radius_m is not None:
+            profile.service_radius_m = payload.service_radius_m
+        profile.last_seen_at = utcnow()
+        profile.updated_at = utcnow()
+        db.commit()
+        db.refresh(profile)
+        return responder_profile_out(db, profile)
+
+    @app.get("/responders/incidents", response_model=list[ResponderIncidentOut])
+    def responder_incidents(current: User = Depends(get_current_user), db: Session = Depends(get_db)):
+        profile = require_responder(current, db)
+        assignments = db.scalars(
+            select(ResponderAssignment)
+            .where(ResponderAssignment.responder_profile_id == profile.id)
+            .order_by(ResponderAssignment.offered_at.desc())
+            .limit(50)
+        ).all()
+        output: list[ResponderIncidentOut] = []
+        for assignment in assignments:
+            alert = db.get(Alert, assignment.alert_id)
+            if alert is None:
+                continue
+            sender = db.get(User, alert.owner_id)
+            output.append(ResponderIncidentOut(
+                alert_id=alert.id, sender_name=sender.name, sender_phone_e164=sender.phone_e164,
+                latitude=alert.latitude, longitude=alert.longitude, accuracy_m=alert.accuracy_m,
+                note=alert.note, state=alert.state, assignment=responder_assignment_out(db, assignment),
+            ))
+        return output
+
+    def responder_transition(alert_id: str, target: str, current: User, db: Session) -> ResponderAssignmentOut:
+        profile = require_responder(current, db)
+        assignment = current_assignment(db, alert_id)
+        if assignment is None or assignment.responder_profile_id != profile.id:
+            raise HTTPException(status_code=404, detail="Incident is not assigned to this responder")
+        now = utcnow()
+        allowed = {
+            "accepted": {"offered"},
+            "arrived": {"accepted"},
+            "completed": {"accepted", "arrived"},
+            "declined": {"offered"},
+        }
+        if assignment.state == target:
+            return responder_assignment_out(db, assignment)
+        if assignment.state not in allowed[target]:
+            raise HTTPException(status_code=409, detail=f"Cannot move responder state from {assignment.state} to {target}")
+        assignment.state = target
+        if target == "accepted":
+            assignment.accepted_at = now
+        elif target == "arrived":
+            assignment.arrived_at = now
+        elif target == "completed":
+            assignment.completed_at = now
+            profile.is_available = True
+        elif target == "declined":
+            assignment.declined_at = now
+            profile.is_available = True
+        if target in {"accepted", "arrived"}:
+            profile.is_available = False
+        append_incident_event(
+            db, alert_id=alert_id, event_type=f"SAFE_REACH_{target.upper()}",
+            actor_type="verified_responder", actor_user_id=current.id,
+            payload={"responder_profile_id": profile.id, "organization_name": profile.organization_name},
+        )
+        if target == "declined":
+            alert = db.get(Alert, alert_id)
+            if alert is not None and alert.state == AlertState.active.value:
+                match_nearest_responder(db, alert, reason="responder_declined")
+        db.commit()
+        return responder_assignment_out(db, assignment)
+
+    @app.post("/responders/incidents/{alert_id}/accept", response_model=ResponderAssignmentOut)
+    def responder_accept(alert_id: str, current: User = Depends(get_current_user), db: Session = Depends(get_db)):
+        return responder_transition(alert_id, "accepted", current, db)
+
+    @app.post("/responders/incidents/{alert_id}/arrive", response_model=ResponderAssignmentOut)
+    def responder_arrive(alert_id: str, current: User = Depends(get_current_user), db: Session = Depends(get_db)):
+        return responder_transition(alert_id, "arrived", current, db)
+
+    @app.post("/responders/incidents/{alert_id}/complete", response_model=ResponderAssignmentOut)
+    def responder_complete(alert_id: str, current: User = Depends(get_current_user), db: Session = Depends(get_db)):
+        return responder_transition(alert_id, "completed", current, db)
+
+    @app.post("/responders/incidents/{alert_id}/decline", response_model=ResponderAssignmentOut)
+    def responder_decline(alert_id: str, current: User = Depends(get_current_user), db: Session = Depends(get_db)):
+        return responder_transition(alert_id, "declined", current, db)
+
+    @app.post("/alerts/{alert_id}/safe-reach/rematch", response_model=AlertOut)
+    def safe_reach_rematch(
+        alert_id: str, current: User = Depends(get_current_user), db: Session = Depends(get_db),
+    ):
+        alert = db.scalar(alert_query().where(Alert.id == alert_id))
+        if not alert or alert.owner_id != current.id:
+            raise HTTPException(status_code=404, detail="Alert not found")
+        if alert.state != AlertState.active.value:
+            raise HTTPException(status_code=409, detail="Emergency session is not active")
+        existing = current_assignment(db, alert.id)
+        if existing is not None and existing.state not in {"declined", "completed", "cancelled", "expired"}:
+            existing.state = "declined"
+            existing.declined_at = utcnow()
+        match_nearest_responder(db, alert, reason="traveler_requested_rematch")
+        db.commit()
+        result = db.scalar(alert_query().where(Alert.id == alert.id))
+        return alert_out(db, result)
 
     # Journey Guard was intentionally removed from the V1.4.4 product surface.
     # The legacy table is retained for non-destructive database compatibility.

@@ -6,6 +6,7 @@ import 'contacts_screen.dart';
 import 'history_screen.dart';
 import 'home_screen.dart';
 import 'inbox_screen.dart';
+import 'responder_console_screen.dart';
 
 class MainShell extends StatefulWidget {
   const MainShell({super.key, required this.session});
@@ -41,10 +42,18 @@ class _MainShellState extends State<MainShell> {
         actions: [
           PopupMenuButton<String>(
             onSelected: (value) {
-              if (value == 'logout') widget.session.logout();
+              if (value == 'logout') {
+                widget.session.logout();
+              } else if (value == 'responder') {
+                Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => ResponderConsoleScreen(session: widget.session)),
+                );
+              }
             },
             itemBuilder: (_) => [
               PopupMenuItem(enabled: false, child: Text(widget.session.user?.email ?? '')),
+              if (widget.session.user?.role == 'responder')
+                const PopupMenuItem(value: 'responder', child: Row(children: [Icon(Icons.verified_user_outlined), SizedBox(width: 8), Text('Responder console')])),
               const PopupMenuItem(value: 'logout', child: Row(children: [Icon(Icons.logout), SizedBox(width: 8), Text('Sign out')])),
             ],
           ),

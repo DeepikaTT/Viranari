@@ -1,7 +1,7 @@
 name: viranari_app
-description: ViraNari v1.4.4 V2 UI Restore with V1.4 reliable location tracking.
+description: ViraNari v1.5.0 SafeReach + ProofChain, preserving V1.4.4 V2 UI and reliable live tracking.
 publish_to: 'none'
-version: 1.4.4+20
+version: 1.5.0+21
 
 environment:
   sdk: '>=3.13.0 <4.0.0'

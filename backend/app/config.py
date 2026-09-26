@@ -49,6 +49,10 @@ class Settings:
     access_token_minutes: int = int(os.getenv("VIRANARI_ACCESS_TOKEN_MINUTES", "720"))
     invite_minutes: int = int(os.getenv("VIRANARI_INVITE_MINUTES", "1440"))
     cors_origins: str = os.getenv("VIRANARI_CORS_ORIGINS", "*")
+    admin_key: str = os.getenv("VIRANARI_ADMIN_KEY", "")
+    proof_key_path: str = os.getenv("VIRANARI_PROOF_KEY_PATH", "./data/.proof_ed25519.pem")
+    responder_location_ttl_minutes: int = int(os.getenv("VIRANARI_RESPONDER_LOCATION_TTL_MINUTES", "30"))
+    responder_offer_timeout_seconds: int = int(os.getenv("VIRANARI_RESPONDER_OFFER_TIMEOUT_SECONDS", "60"))
 
 
 settings = Settings()

@@ -18,6 +18,7 @@ import '../services/location_sync_service.dart';
 import '../services/offline_queue.dart';
 import '../widgets/sos_button.dart';
 import '../widgets/status_chip.dart';
+import 'safe_reach_sheet.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key, required this.session});
@@ -55,6 +56,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   DateTime? _lastPhoneFix;
   DateTime? _lastServerSync;
   DateTime? _lastForcedGpsAt;
+  DateTime? _lastSafeReachSearchAt;
   Position? _lastPosition;
   AlertRecord? _latest;
 
@@ -102,6 +104,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           _lastHeartbeatAt = active.lastDeviceSeenAt?.toLocal();
           _lastPhoneFix = active.lastGpsFixAt?.toLocal();
           _lastServerSync = active.lastLocationSyncAt?.toLocal();
+          if (active.safeReach == null) _lastSafeReachSearchAt = DateTime.now();
           _message = 'Emergency session restored. Live tracking resumed.';
         });
         await _startLiveTracking(active.id);
@@ -143,6 +146,20 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           _battery = snapshot.batteryPercent;
           _network = snapshot.networkState;
         });
+        final safeReachNeedsRetry = refreshed.safeReach == null ||
+            refreshed.safeReach!.state == 'declined' ||
+            refreshed.safeReach!.state == 'expired';
+        final now = DateTime.now();
+        final retryAge = _lastSafeReachSearchAt == null ? const Duration(days: 1) : now.difference(_lastSafeReachSearchAt!);
+        if (safeReachNeedsRetry && retryAge >= const Duration(seconds: 30)) {
+          _lastSafeReachSearchAt = now;
+          try {
+            final rematched = await widget.session.api.rematchSafeReach(active.id);
+            if (mounted) setState(() => _latest = rematched);
+          } catch (_) {
+            // Trusted Circle + live tracking remain primary even when no responder is available.
+          }
+        }
       } catch (_) {
         if (mounted) setState(() => _backendOnline = false);
         return;
@@ -479,6 +496,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           _battery = snapshot.batteryPercent;
           _network = snapshot.networkState;
           _backendOnline = true;
+          if (alert.safeReach == null) _lastSafeReachSearchAt = DateTime.now();
           _message = alert.isTest
               ? 'Test drill active. Trusted contacts see a TEST label.'
               : alert.recipients.isEmpty
@@ -580,6 +598,50 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _showSafeReach() async {
+    final alert = _latest;
+    if (alert == null || !mounted) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: ViraColors.surface,
+      showDragHandle: true,
+      builder: (_) => SafeReachSheet(session: widget.session, alertId: alert.id, canRematch: true),
+    );
+    await _refreshLatest();
+  }
+
+  Future<void> _callEmergencyServices() async {
+    const emergencyNumber = String.fromEnvironment('VIRANARI_EMERGENCY_NUMBER', defaultValue: '112');
+    final opened = await launchUrl(Uri(scheme: 'tel', path: emergencyNumber), mode: LaunchMode.externalApplication);
+    if (!opened && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not open the phone app.')));
+    }
+  }
+
+  Future<void> _callTrustedContact() async {
+    try {
+      final contacts = await widget.session.api.contacts();
+      final callable = contacts.where((c) => c.status == 'active' && c.phoneE164 != null && c.phoneE164!.isNotEmpty).toList();
+      if (callable.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('No accepted Trusted Circle contact has a phone number yet.')),
+          );
+        }
+        return;
+      }
+      final phone = callable.first.phoneE164!;
+      final opened = await launchUrl(Uri(scheme: 'tel', path: phone), mode: LaunchMode.externalApplication);
+      if (!opened && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not open the phone app.')));
+      }
+    } on ApiException catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+    }
+  }
+
   String _fmt(DateTime? time) => time == null ? 'waiting' : DateFormat('h:mm:ss a').format(time.toLocal());
 
   String get _livenessLabel {
@@ -658,7 +720,39 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           ),
           const SizedBox(height: 28),
           if (active) _ActiveEmergencyBanner(alert: _latest!),
-          if (active) const SizedBox(height: 18),
+          if (active) ...[
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: FilledButton.tonalIcon(
+                    onPressed: _showSafeReach,
+                    icon: const Icon(Icons.verified_user_rounded),
+                    label: Text(_latest?.safeReach == null ? 'SafeReach' : _latest!.safeReach!.statusLabel),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _callTrustedContact,
+                    icon: const Icon(Icons.call_rounded),
+                    label: const Text('Call trusted'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                style: FilledButton.styleFrom(backgroundColor: ViraColors.pinkDark),
+                onPressed: _callEmergencyServices,
+                icon: const Icon(Icons.local_police_outlined),
+                label: const Text('Call emergency services'),
+              ),
+            ),
+            const SizedBox(height: 18),
+          ],
           if (!active) ...[
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
