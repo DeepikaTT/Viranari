@@ -1,7 +1,7 @@
 name: viranari_app
-description: ViraNari v1.8.2 Live Safety Map + GPS feed + notification-bar SOS alerts.
+description: ViraNari v1.8.3 Safety Map density fix + live GPS + SOS notifications.
 publish_to: 'none'
-version: 1.8.2+42
+version: 1.8.3+43
 
 environment:
   sdk: '>=3.13.0 <4.0.0'

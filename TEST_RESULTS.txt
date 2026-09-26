@@ -1,4 +1,15 @@
-ViraNari v1.8.2 backend validation
-- 37 backend tests passed
-- Python compileall passed
-- Flutter analyze/build must be run on the user machine (Flutter unavailable in packaging environment).
+ViraNari v1.8.3 validation
+
+Backend: 37/37 pytest tests passed.
+Safety Map source assertions: passed.
+- anonymous people radius is separate from safety-place radius
+- safety places retained to 15 km
+- show-all-safety-places control present
+- anonymous presence query still uses 500 m / 2 km / 5 km selector
+
+Flutter SDK is not installed in the packaging environment, so run locally:
+  cd mobile
+  flutter clean
+  flutter pub get
+  flutter analyze
+  flutter build apk --release

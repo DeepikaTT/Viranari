@@ -19,7 +19,7 @@ class SafePlaceDiscoveryService {
   Future<List<SafeNodePoint>> discover({
     required double latitude,
     required double longitude,
-    int radiusM = 12000,
+    int radiusM = 15000,
   }) async {
     final boundedRadius = radiusM.clamp(1000, 25000);
     final query = '''
@@ -43,7 +43,7 @@ out center tags;
               Uri.parse(endpoint),
               headers: const {
                 'Accept': 'application/json',
-                'User-Agent': 'ViraNari/1.8.2 safety-map',
+                'User-Agent': 'ViraNari/1.8.3 safety-map',
               },
               body: {'data': query},
             )

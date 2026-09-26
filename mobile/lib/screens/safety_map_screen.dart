@@ -41,7 +41,9 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
   bool _followMe = true;
   bool _usingPublicPlaces = false;
   String? _error;
-  int _radiusM = 2000;
+  static const int _safePlaceRadiusM = 15000;
+  int _peopleRadiusM = 2000;
+  bool _initialSafePlaceFitDone = false;
   DateTime? _lastUpdated;
   DateTime? _lastPublicLookup;
 
@@ -111,14 +113,14 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
     final verified = <SafeNodePoint>[];
     final publicPlaces = <SafeNodePoint>[];
 
-    // V1.8.2 deliberately augments verified Safe Nodes with public map data.
+    // V1.8.3 keeps verified Safe Nodes and public safety places in one rich map.
     // A single verified node must never suppress nearby hospitals/police/etc.
     try {
       verified.addAll(
         await widget.session.api.nearbySafeNodes(
           latitude: position.latitude,
           longitude: position.longitude,
-          radiusM: 10000,
+          radiusM: _safePlaceRadiusM,
         ),
       );
     } catch (_) {
@@ -135,7 +137,7 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
           await _publicPlaces.discover(
             latitude: position.latitude,
             longitude: position.longitude,
-            radiusM: 10000,
+            radiusM: _safePlaceRadiusM,
           ),
         );
         _lastPublicLookup = DateTime.now();
@@ -159,12 +161,12 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
 
     final merged = <SafeNodePoint>[];
     for (final node in recalculatedVerified) {
-      if (node.approxDistanceM <= 10000) merged.add(node);
+      if (node.approxDistanceM <= _safePlaceRadiusM) merged.add(node);
     }
 
     // Prefer a verified entry when OpenStreetMap has effectively the same place.
     for (final node in recalculatedPublic) {
-      if (node.approxDistanceM > 10000) continue;
+      if (node.approxDistanceM > _safePlaceRadiusM) continue;
       final duplicateVerified = merged.any((existing) {
         if (!existing.verified || existing.category != node.category) return false;
         final d = Geolocator.distanceBetween(
@@ -221,7 +223,7 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
             deviceId: deviceId,
             latitude: position.latitude,
             longitude: position.longitude,
-            radiusM: _radiusM,
+            radiusM: _peopleRadiusM,
           );
         } catch (e) {
           presenceError = e;
@@ -241,12 +243,18 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
         _error = presenceError?.toString();
       });
 
-      if (_followMe) {
+      if (!_initialSafePlaceFitDone && safeNodes.isNotEmpty) {
+        _initialSafePlaceFitDone = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          _fitSafePlaces(position, safeNodes);
+        });
+      } else if (_followMe) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (!mounted) return;
           _mapController.move(
             LatLng(position.latitude, position.longitude),
-            _zoomForRadius(_radiusM),
+            _zoomForRadius(_peopleRadiusM),
           );
         });
       }
@@ -262,11 +270,24 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
   }
 
   double _zoomForRadius(int radius) {
-    // Show roughly the full diameter, not just the centre of the selected
-    // search radius. This makes 500 m / 2 km / 5 km controls visibly distinct.
     if (radius <= 500) return 15.5;
     if (radius <= 2000) return 13.7;
-    return 12.3;
+    if (radius <= 5000) return 12.3;
+    if (radius <= 10000) return 11.3;
+    return 10.7;
+  }
+
+  void _fitSafePlaces(Position me, Iterable<SafeNodePoint> nodes) {
+    var farthest = 2000;
+    for (final node in nodes) {
+      farthest = math.max(farthest, node.approxDistanceM);
+    }
+    farthest = math.min(farthest, _safePlaceRadiusM);
+    _followMe = false;
+    _mapController.move(
+      LatLng(me.latitude, me.longitude),
+      _zoomForRadius(farthest),
+    );
   }
 
   Future<void> _togglePresence(bool value) async {
@@ -447,8 +468,10 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
     }
 
     final center = LatLng(me.latitude, me.longitude);
+    // Safety places are intentionally independent from the anonymous-people
+    // radius. The 500 m / 2 km / 5 km selector controls people only.
     final visibleSafeNodes = _safeNodes
-        .where((node) => node.approxDistanceM <= _radiusM)
+        .where((node) => node.approxDistanceM <= _safePlaceRadiusM)
         .toList(growable: false);
     final hospitalCount = visibleSafeNodes
         .where((node) => node.category == 'hospital')
@@ -574,7 +597,7 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
                     mapController: _mapController,
                     options: MapOptions(
                       initialCenter: center,
-                      initialZoom: _zoomForRadius(_radiusM),
+                      initialZoom: _zoomForRadius(_peopleRadiusM),
                       onPositionChanged: (_, hasGesture) {
                         if (hasGesture && _followMe && mounted) {
                           setState(() => _followMe = false);
@@ -641,7 +664,7 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
                         foregroundColor: ViraColors.plum,
                         onPressed: () {
                           setState(() => _followMe = true);
-                          _mapController.move(center, _zoomForRadius(_radiusM));
+                          _mapController.move(center, _zoomForRadius(_peopleRadiusM));
                         },
                         child: const Icon(Icons.my_location),
                       ),
@@ -652,6 +675,21 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
                         foregroundColor: ViraColors.plum,
                         onPressed: _refreshing ? null : _refresh,
                         child: const Icon(Icons.refresh),
+                      ),
+                      const SizedBox(height: 8),
+                      Tooltip(
+                        message: 'Show all safety places',
+                        child: FloatingActionButton.small(
+                          heroTag: 'fit_safe_places',
+                          backgroundColor: Colors.white,
+                          foregroundColor: ViraColors.plum,
+                          onPressed: () {
+                            if (visibleSafeNodes.isEmpty) return;
+                            setState(() => _followMe = false);
+                            _fitSafePlaces(me, visibleSafeNodes);
+                          },
+                          child: const Icon(Icons.zoom_out_map_rounded),
+                        ),
                       ),
                     ],
                   ),
@@ -726,8 +764,8 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
                       alignment: Alignment.centerLeft,
                       child: Text(
                         _usingPublicPlaces
-                            ? '${visibleSafeNodes.length} public places · $hospitalCount hospital · $policeCount police · $pharmacyCount pharmacy · amber = public'
-                            : '${visibleSafeNodes.length} verified Safe Node${visibleSafeNodes.length == 1 ? '' : 's'} within ${_distanceText(_radiusM)}',
+                            ? '${visibleSafeNodes.length} safety places within 15 km · $hospitalCount hospital/clinic · $policeCount police · $pharmacyCount pharmacy · amber = public'
+                            : '${visibleSafeNodes.length} verified Safe Node${visibleSafeNodes.length == 1 ? '' : 's'} within 15 km',
                         style: const TextStyle(
                           color: ViraColors.mutedPlum,
                           fontSize: 11,
@@ -736,6 +774,18 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
                     ),
                   ],
                   const SizedBox(height: 9),
+                  const Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      'Anonymous people radius',
+                      style: TextStyle(
+                        color: ViraColors.mutedPlum,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 5),
                   Row(
                     children: [
                       Expanded(
@@ -748,14 +798,14 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
                               ButtonSegment(value: 2000, label: Text('2km')),
                               ButtonSegment(value: 5000, label: Text('5km')),
                             ],
-                            selected: {_radiusM},
+                            selected: {_peopleRadiusM},
                             onSelectionChanged: (value) {
                               final radius = value.first;
                               setState(() {
-                                _radiusM = radius;
-                                _followMe = true;
+                                _peopleRadiusM = radius;
                               });
-                              _mapController.move(center, _zoomForRadius(radius));
+                              // People radius filters anonymous presence only.
+                              // Safety-place pins remain available independently.
                               unawaited(_refresh());
                             },
                           ),
