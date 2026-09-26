@@ -86,10 +86,10 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
 
     app = FastAPI(
         title="ViraNari API",
-        version="1.4.2",
+        version="1.4.4",
         description=(
             "Emergency-response API with consent-based trusted contacts, delivery receipts, "
-            "idempotent offline retry, heartbeat-based live safety, and Find-My-style live map tracking."
+            "idempotent offline retry, heartbeat-based live safety, continuous location tracking, and reconnect recovery."
         ),
     )
     app.state.engine = engine
@@ -206,7 +206,7 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "service": "viranari-api", "version": "1.4.2"}
+        return {"status": "ok", "service": "viranari-api", "version": "1.4.4"}
 
     @app.post("/auth/register", response_model=TokenOut, status_code=201)
     def register(payload: RegisterIn, db: Session = Depends(get_db)):
@@ -707,7 +707,7 @@ def create_app(*, database_path: str | None = None, settings: Settings | None = 
         db.commit()
         return MessageOut(message="Alert acknowledged")
 
-    # Journey Guard was intentionally removed from the V1.4.2 product surface.
+    # Journey Guard was intentionally removed from the V1.4.4 product surface.
     # The legacy table is retained for non-destructive database compatibility.
 
     @app.get("/audit/recent", response_model=list[AuditEventOut])

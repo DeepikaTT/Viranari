@@ -1,6 +1,15 @@
-ViraNari V1.4.2 backend validation
+ViraNari V1.4.4 validation
 
-28 backend automated tests passed in the build environment.
-Coverage includes authentication, Trusted Circle consent, SOS idempotency, delivery and acknowledgement, offline retry semantics, live-location timeline, batch replay with original timestamps, heartbeat liveness, UTC timestamp handling, access control, persistence, and schema compatibility.
+Backend:
+- 28 automated tests passed.
 
-Flutter SDK is not installed in the packaging environment, so run `flutter analyze` and a real Android build on the Arch development machine before demo use.
+Mobile source checks:
+- V1.2 UI screens restored.
+- V1.4 tracking/location service retained.
+- No flutter_map / latlong2 dependency.
+- No dedicated Live Tracking map screen.
+- No SMS permission/native SMS implementation.
+- No Nearby/Safety Presence UI.
+- No Journey Guard UI.
+
+Flutter SDK is not installed in the packaging environment; run `flutter analyze` and a physical-device build on the Arch development machine.

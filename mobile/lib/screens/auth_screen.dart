@@ -15,7 +15,6 @@ class AuthScreen extends StatefulWidget {
 class _AuthScreenState extends State<AuthScreen> {
   final _name = TextEditingController();
   final _email = TextEditingController();
-  final _phone = TextEditingController(text: '+91');
   final _password = TextEditingController();
   bool _register = false;
   bool _busy = false;
@@ -25,20 +24,13 @@ class _AuthScreenState extends State<AuthScreen> {
   void dispose() {
     _name.dispose();
     _email.dispose();
-    _phone.dispose();
     _password.dispose();
     super.dispose();
   }
 
-  bool _validPhone(String value) => RegExp(r'^\+[1-9][0-9]{7,14}$').hasMatch(value);
-
   Future<void> _submit() async {
-    final phone = _phone.text.trim().replaceAll(' ', '');
-    if (_email.text.trim().isEmpty ||
-        _password.text.length < 8 ||
-        (_register && _name.text.trim().length < 2) ||
-        (_register && !_validPhone(phone))) {
-      setState(() => _error = 'Enter a valid email, name, +country-code phone number, and password of at least 8 characters.');
+    if (_email.text.trim().isEmpty || _password.text.length < 8 || (_register && _name.text.trim().length < 2)) {
+      setState(() => _error = 'Enter a valid email, name, and password of at least 8 characters.');
       return;
     }
     setState(() {
@@ -47,19 +39,14 @@ class _AuthScreenState extends State<AuthScreen> {
     });
     try {
       if (_register) {
-        await widget.session.register(
-          _name.text.trim(),
-          _email.text.trim(),
-          _password.text,
-          phoneE164: phone,
-        );
+        await widget.session.register(_name.text.trim(), _email.text.trim(), _password.text);
       } else {
         await widget.session.login(_email.text.trim(), _password.text);
       }
     } on ApiException catch (e) {
-      if (mounted) setState(() => _error = e.message);
-    } catch (_) {
-      if (mounted) setState(() => _error = 'Could not connect to ViraNari backend.');
+      setState(() => _error = e.message);
+    } catch (e) {
+      setState(() => _error = 'Could not connect to ViraNari backend.');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -96,19 +83,6 @@ class _AuthScreenState extends State<AuthScreen> {
                     const SizedBox(height: 14),
                   ],
                   TextField(controller: _email, keyboardType: TextInputType.emailAddress, textInputAction: TextInputAction.next, decoration: const InputDecoration(labelText: 'Email', prefixIcon: Icon(Icons.alternate_email))),
-                  if (_register) ...[
-                    const SizedBox(height: 14),
-                    TextField(
-                      controller: _phone,
-                      keyboardType: TextInputType.phone,
-                      textInputAction: TextInputAction.next,
-                      decoration: const InputDecoration(
-                        labelText: 'Phone (+country code)',
-                        helperText: 'Used only so trusted contacts can call you during an emergency.',
-                        prefixIcon: Icon(Icons.phone_outlined),
-                      ),
-                    ),
-                  ],
                   const SizedBox(height: 14),
                   TextField(controller: _password, obscureText: true, onSubmitted: (_) => _submit(), decoration: const InputDecoration(labelText: 'Password', prefixIcon: Icon(Icons.lock_outline))),
                   if (_error != null) ...[
@@ -134,7 +108,7 @@ class _AuthScreenState extends State<AuthScreen> {
                   ),
                   const SizedBox(height: 28),
                   const Text(
-                    'Location is shared only during an SOS. Phone numbers are exposed only to accepted Trusted Circle relationships.',
+                    'Prototype privacy note: location is sent only when you trigger SOS. Trusted contacts must explicitly accept an invitation.',
                     textAlign: TextAlign.center,
                     style: TextStyle(color: ViraColors.mutedPlum, height: 1.4),
                   ),

@@ -1,20 +1,15 @@
-# ViraNari V1.4.2 demo checklist
+# ViraNari V1.4.4 Demo Checklist
 
-- [ ] `/health` returns `1.4.2`
-- [ ] fresh login works
-- [ ] Trusted Circle invitation/acceptance works
-- [ ] Map tab opens
-- [ ] SOS obtains GPS and creates an active session
-- [ ] sender heartbeat updates while stationary
-- [ ] receiver stays LIVE while sender is stationary
-- [ ] moving sender produces new map points/trail
-- [ ] travelled distance changes
-- [ ] receiver acknowledgement is visible to sender
-- [ ] data/Wi-Fi loss preserves last known marker
-- [ ] sender continues queueing GPS while offline
-- [ ] connectivity restoration returns status to LIVE
-- [ ] queued GPS trail replays with original timestamps
-- [ ] "I'm safe" resolves the session
-- [ ] false alarm cancellation works
-- [ ] no SMS controls/permission appear
-- [ ] no Safety Presence / Nearby screen appears
+- [ ] `/health` reports `1.4.4`.
+- [ ] App logs in and loads V1.2-style Home / Circle / Inbox / History UI.
+- [ ] Trusted Circle invitation/acceptance works.
+- [ ] Sender starts SOS and real coordinates appear.
+- [ ] Recipient Inbox receives the alert.
+- [ ] Open Map launches the latest coordinates externally.
+- [ ] Sender remains LIVE while stationary because heartbeat continues.
+- [ ] While moving, latest coordinates and location timeline change.
+- [ ] Disable sender data: recipient retains last known position.
+- [ ] Restore data: sender reconnects and queued location points replay.
+- [ ] Acknowledgement returns to sender.
+- [ ] Resolve/false-alarm flows work.
+- [ ] SMS card is visibly marked placeholder and does not request permission.

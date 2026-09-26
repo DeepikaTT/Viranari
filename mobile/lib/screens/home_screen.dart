@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:intl/intl.dart';
 import 'package:uuid/uuid.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../core/api_client.dart';
 import '../core/models.dart';
@@ -419,6 +420,28 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   String _cleanError(Object e) => e.toString().replaceFirst('Bad state: ', '');
 
+
+  Future<void> _openCurrentMap() async {
+    final position = _lastPosition;
+    final latest = _latest;
+    final latitude = position?.latitude ?? latest?.latitude;
+    final longitude = position?.longitude ?? latest?.longitude;
+    if (latitude == null || longitude == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No GPS location is available yet.')),
+        );
+      }
+      return;
+    }
+    final uri = Uri.parse('geo:$latitude,$longitude?q=$latitude,$longitude(ViraNari%20location)');
+    if (!await launchUrl(uri, mode: LaunchMode.externalApplication) && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No map app could open this location.')),
+      );
+    }
+  }
+
   Future<void> _sendSos() async {
     if (_busy || _latest?.isActive == true) return;
     await HapticFeedback.heavyImpact();
@@ -585,9 +608,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
+    final state = _latest?.deliveryState;
     final active = _latest?.isActive == true;
-    final latest = _latest;
-    final lowBattery = (_battery ?? 100) <= 20;
+    final batteryText = _battery == null ? 'Battery ?' : 'Battery $_battery%';
 
     return RefreshIndicator(
       onRefresh: () async {
@@ -596,7 +619,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         await _refreshLatest();
       },
       child: ListView(
-        padding: const EdgeInsets.fromLTRB(20, 14, 20, 110),
+        padding: const EdgeInsets.fromLTRB(20, 18, 20, 110),
         children: [
           Row(
             children: [
@@ -604,206 +627,220 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      'Live Safety',
-                      style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                            fontWeight: FontWeight.w900,
-                            color: ViraColors.plum,
-                          ),
-                    ),
-                    const Text(
-                      'One action. Stay visible to the people you trust.',
-                      style: TextStyle(color: ViraColors.mutedPlum),
-                    ),
+                    Text('Hi ${widget.session.user?.name ?? ''}', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900, color: ViraColors.plum)),
+                    const SizedBox(height: 4),
+                    Text(active ? 'Emergency response mode' : 'Ready when seconds matter', style: const TextStyle(color: ViraColors.mutedPlum)),
                   ],
                 ),
               ),
-              Switch(value: _testMode, onChanged: active ? null : (v) => setState(() => _testMode = v)),
-              const Text('Test'),
-            ],
-          ),
-          const SizedBox(height: 14),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              StatusChip(
-                label: _backendOnline ? 'Server online' : 'Server offline',
-                icon: Icons.cloud_outlined,
-                good: _backendOnline,
-              ),
-              StatusChip(
-                label: _network.toUpperCase(),
-                icon: Icons.signal_cellular_alt,
-                good: _network != 'offline',
-              ),
-              StatusChip(
-                label: '${_battery ?? '--'}% battery',
-                icon: Icons.battery_5_bar,
-                good: !lowBattery,
-              ),
-              StatusChip(
-                label: '$_trustedCount trusted',
-                icon: Icons.group_outlined,
-                good: _trustedCount > 0,
-              ),
+              IconButton.filledTonal(onPressed: () => _refreshLatest(), icon: const Icon(Icons.sync_rounded), tooltip: 'Refresh emergency status'),
             ],
           ),
           const SizedBox(height: 18),
-          Center(
-            child: SosButton(
-              onPressed: active ? null : _sendSos,
-              busy: _busy,
-              label: _testMode ? 'HOLD TEST SOS' : null,
-            ),
-          ),
-          const SizedBox(height: 14),
-          Text(
-            active ? 'SOS ACTIVE — live location sharing continues' : 'Press and hold. No typing required.',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontWeight: FontWeight.w800,
-              color: active ? ViraColors.pinkDark : ViraColors.plum,
-            ),
-          ),
-          const SizedBox(height: 14),
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-              color: active ? ViraColors.dangerSoft : ViraColors.surface,
-              borderRadius: BorderRadius.circular(22),
+              color: active ? ViraColors.dangerSoft : ViraColors.lilac,
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: active ? ViraColors.pinkDark.withValues(alpha: .35) : ViraColors.lilacStrong),
             ),
-            child: Text(_message, style: const TextStyle(height: 1.4, fontWeight: FontWeight.w700)),
-          ),
-          const SizedBox(height: 14),
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(22)),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
               children: [
-                Row(
-                  children: [
-                    const Icon(Icons.my_location, color: ViraColors.plum),
-                    const SizedBox(width: 8),
-                    const Expanded(
-                      child: Text(
-                        'Live location',
-                        style: TextStyle(fontSize: 17, fontWeight: FontWeight.w900),
-                      ),
-                    ),
-                    Text(
-                      _livenessLabel,
-                      style: TextStyle(
-                        fontWeight: FontWeight.w900,
-                        color: _livenessColor,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                _MetricRow(label: 'Device heartbeat', value: _fmt(_latest?.lastDeviceSeenAt ?? _lastHeartbeatAt), good: _livenessLabel == 'LIVE'),
-                _MetricRow(label: 'Phone GPS fix', value: _fmt(_lastPhoneFix), good: _lastPhoneFix != null),
-                _MetricRow(label: 'Server location sync', value: _fmt(_lastServerSync), good: _lastServerSync != null && _syncError == null),
-                _MetricRow(label: 'Queued GPS points', value: '$_queuedLocations', good: _queuedLocations == 0),
-                if (_lastPosition != null)
-                  _MetricRow(
-                    label: 'GPS accuracy',
-                    value: '±${_lastPosition!.accuracy.toStringAsFixed(0)} m',
-                    good: _lastPosition!.accuracy < 30,
-                  ),
-                if (_syncError != null) ...[
-                  const SizedBox(height: 8),
-                  Text(_syncError!, style: const TextStyle(color: ViraColors.pinkDark, fontWeight: FontWeight.w800)),
-                ],
-                if (active && !_backgroundAlways) ...[
-                  const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      const Expanded(
-                        child: Text(
-                          'For strongest background tracking, enable “Allow all the time” location permission.',
-                          style: TextStyle(color: ViraColors.warning),
-                        ),
-                      ),
-                      TextButton(onPressed: _location.openAppSettings, child: const Text('Settings')),
-                    ],
-                  ),
-                ],
+                StatusChip(label: _backendOnline ? 'Server reachable' : 'Server offline', icon: _backendOnline ? Icons.cloud_done_outlined : Icons.cloud_off_outlined, good: _backendOnline),
+                StatusChip(label: _network.toUpperCase(), icon: _network == 'offline' ? Icons.signal_wifi_off : Icons.network_check, good: _network != 'offline' && _network != 'unknown'),
+                StatusChip(label: batteryText, icon: Icons.battery_5_bar, good: (_battery ?? 100) > 20),
+                StatusChip(label: '$_trustedCount trusted', icon: Icons.group_outlined, good: _trustedCount > 0),
+                StatusChip(label: _pending == 0 ? 'Queue clear' : '$_pending queued', icon: _pending == 0 ? Icons.cloud_done_outlined : Icons.cloud_off_outlined, good: _pending == 0),
               ],
             ),
           ),
-          if (_pending > 0) ...[
-            const SizedBox(height: 12),
-            Text(
-              '$_pending SOS request${_pending == 1 ? '' : 's'} waiting for server reconciliation.',
-              style: const TextStyle(color: ViraColors.warning, fontWeight: FontWeight.w800),
-            ),
-          ],
-          if (latest != null) ...[
-            const SizedBox(height: 14),
+          const SizedBox(height: 28),
+          if (active) _ActiveEmergencyBanner(alert: _latest!),
+          if (active) const SizedBox(height: 18),
+          if (!active) ...[
             Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(color: ViraColors.lilac, borderRadius: BorderRadius.circular(22)),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              decoration: BoxDecoration(color: _testMode ? ViraColors.lilac : Colors.white, borderRadius: BorderRadius.circular(18), border: Border.all(color: ViraColors.lilacStrong)),
+              child: Row(
                 children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          'Emergency ${latest.state.toUpperCase()}',
-                          style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w900),
-                        ),
-                      ),
-                      Text(
-                        latest.deliveryState,
-                        style: const TextStyle(fontWeight: FontWeight.w900, color: ViraColors.plum),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
-                  Text('${latest.acknowledgedCount}/${latest.recipients.length} acknowledged · ${latest.deliveredCount}/${latest.recipients.length} delivered'),
-                  if (active) ...[
-                    const SizedBox(height: 10),
-                    Row(
-                      children: [
-                        Expanded(child: FilledButton.tonal(onPressed: _resolveSafe, child: const Text("I'm safe"))),
-                        const SizedBox(width: 8),
-                        Expanded(child: TextButton(onPressed: _cancelFalseAlarm, child: const Text('False alarm'))),
-                      ],
-                    ),
-                  ],
+                  const Icon(Icons.science_outlined, color: ViraColors.plum),
+                  const SizedBox(width: 10),
+                  const Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text('Practice mode', style: TextStyle(fontWeight: FontWeight.w900)), Text('Send a clearly labelled test alert to verify your setup.', style: TextStyle(color: ViraColors.mutedPlum, fontSize: 12))])),
+                  Switch(value: _testMode, onChanged: (value) => setState(() => _testMode = value)),
                 ],
               ),
             ),
+            const SizedBox(height: 18),
           ],
+          Center(child: SosButton(onPressed: (_busy || active) ? null : _sendSos, busy: _busy, label: _testMode ? 'HOLD TO TEST' : 'HOLD FOR HELP')), 
+          const SizedBox(height: 12),
+          Center(
+            child: Text(
+              active ? 'SOS already active — live location is being shared' : 'Press and hold. No typing required.',
+              style: const TextStyle(color: ViraColors.mutedPlum, fontWeight: FontWeight.w700),
+              textAlign: TextAlign.center,
+            ),
+          ),
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: ViraColors.surface,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: ViraColors.lilacStrong),
+            ),
+            child: const Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.sms_outlined, color: ViraColors.plum),
+                SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('SMS fallback — coming next', style: TextStyle(fontWeight: FontWeight.w900, color: ViraColors.plum)),
+                      SizedBox(height: 3),
+                      Text('Placeholder only in this build. No SMS permission is requested and no message is sent yet.', style: TextStyle(color: ViraColors.mutedPlum, height: 1.35)),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if ((_battery ?? 100) <= 20) ...[
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(color: const Color(0xFFFFF1D9), borderRadius: BorderRadius.circular(18)),
+              child: const Row(children: [Icon(Icons.battery_alert_rounded, color: ViraColors.warning), SizedBox(width: 10), Expanded(child: Text('Low battery: keep the emergency active, reduce nonessential screen use, and move toward a safe public place if possible.', style: TextStyle(fontWeight: FontWeight.w700)))]),
+            ),
+          ],
+          const SizedBox(height: 24),
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 250),
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(
+              color: state == 'Acknowledged' ? ViraColors.successSoft : Colors.white,
+              borderRadius: BorderRadius.circular(22),
+              border: Border.all(color: state == 'Acknowledged' ? ViraColors.success : ViraColors.lilacStrong),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(state == 'Acknowledged' ? Icons.check_circle : active ? Icons.crisis_alert : Icons.info_outline, color: state == 'Acknowledged' ? ViraColors.success : active ? ViraColors.pinkDark : ViraColors.plum),
+                const SizedBox(width: 12),
+                Expanded(child: Text(_message, style: const TextStyle(height: 1.35, fontWeight: FontWeight.w600))),
+              ],
+            ),
+          ),
+          if (_latest != null) ...[
+            const SizedBox(height: 16),
+            _LatestAlertCard(alert: _latest!),
+          ],
+          if (active) ...[
+            const SizedBox(height: 14),
+            FilledButton.icon(onPressed: _resolveSafe, icon: const Icon(Icons.health_and_safety_outlined), label: const Text("I'm safe — end emergency")),
+            const SizedBox(height: 6),
+            TextButton(onPressed: _cancelFalseAlarm, child: const Text('Accidental trigger? Cancel false alarm')),
+          ],
+          const SizedBox(height: 18),
+          const Text(
+            'ViraNari distinguishes SENT, DELIVERED and ACKNOWLEDGED. During an active session it keeps updating the latest location instead of assuming the first GPS point is enough.',
+            style: TextStyle(color: ViraColors.mutedPlum, height: 1.45),
+          ),
         ],
       ),
     );
   }
 }
 
-class _MetricRow extends StatelessWidget {
-  const _MetricRow({required this.label, required this.value, required this.good});
-  final String label;
-  final String value;
-  final bool good;
+class _ActiveEmergencyBanner extends StatelessWidget {
+  const _ActiveEmergencyBanner({required this.alert});
+  final AlertRecord alert;
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: ViraColors.midnight,
+        borderRadius: BorderRadius.circular(26),
+        boxShadow: [BoxShadow(color: ViraColors.midnight.withValues(alpha: .18), blurRadius: 28, offset: const Offset(0, 12))],
+      ),
       child: Row(
         children: [
-          Icon(
-            good ? Icons.check_circle : Icons.schedule,
-            size: 17,
-            color: good ? ViraColors.success : ViraColors.warning,
+          Container(
+            width: 50,
+            height: 50,
+            decoration: const BoxDecoration(color: ViraColors.pink, shape: BoxShape.circle),
+            child: const Icon(Icons.sensors_rounded, color: Colors.white),
           ),
-          const SizedBox(width: 7),
-          Expanded(child: Text(label)),
-          Text(value, style: const TextStyle(fontWeight: FontWeight.w800)),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(alert.isTest ? 'TEST DRILL ACTIVE' : 'EMERGENCY ACTIVE', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, letterSpacing: 1)),
+                const SizedBox(height: 4),
+                Text('Live update ${DateFormat('h:mm:ss a').format(alert.updatedAt.toLocal())}', style: const TextStyle(color: Color(0xFFD4E5E4))),
+              ],
+            ),
+          ),
+          const Icon(Icons.location_searching, color: ViraColors.gold),
+        ],
+      ),
+    );
+  }
+}
+
+class _LatestAlertCard extends StatelessWidget {
+  const _LatestAlertCard({required this.alert});
+  final AlertRecord alert;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(22)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(child: Text('Latest SOS', style: TextStyle(fontWeight: FontWeight.w900, color: ViraColors.plum, fontSize: 17))),
+              if (alert.isTest) const Padding(padding: EdgeInsets.only(right: 8), child: Text('TEST', style: TextStyle(color: ViraColors.gold, fontWeight: FontWeight.w900, fontSize: 11))),
+              Text(alert.state.toUpperCase(), style: TextStyle(fontWeight: FontWeight.w900, fontSize: 11, color: alert.isActive ? ViraColors.pinkDark : ViraColors.mutedPlum)),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text('${alert.latitude.toStringAsFixed(5)}, ${alert.longitude.toStringAsFixed(5)}', style: const TextStyle(color: ViraColors.mutedPlum)),
+          const SizedBox(height: 4),
+          Wrap(
+            spacing: 12,
+            children: [
+              if (alert.batteryPercent != null) Text('Battery ${alert.batteryPercent}%', style: const TextStyle(color: ViraColors.mutedPlum)),
+              if (alert.networkState != null) Text(alert.networkState!.toUpperCase(), style: const TextStyle(color: ViraColors.mutedPlum)),
+            ],
+          ),
+          const SizedBox(height: 12),
+          if (alert.recipients.isEmpty)
+            const Text('No active trusted contacts.', style: TextStyle(fontWeight: FontWeight.w700))
+          else
+            ...alert.recipients.map(
+              (r) => Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(
+                  children: [
+                    Icon(r.acknowledgedAt != null ? Icons.check_circle : r.deliveredAt != null ? Icons.mark_email_read_outlined : Icons.schedule_send_outlined, size: 20, color: r.acknowledgedAt != null ? ViraColors.success : ViraColors.plum),
+                    const SizedBox(width: 8),
+                    Expanded(child: Text(r.name, style: const TextStyle(fontWeight: FontWeight.w700))),
+                    Text(r.acknowledgedAt != null ? 'ACKNOWLEDGED' : r.deliveredAt != null ? 'DELIVERED' : 'SENT', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w900, color: r.acknowledgedAt != null ? ViraColors.success : ViraColors.mutedPlum)),
+                  ],
+                ),
+              ),
+            ),
         ],
       ),
     );

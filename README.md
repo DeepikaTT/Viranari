@@ -1,55 +1,33 @@
-# ViraNari V1.4.2 — Core Restore
+# ViraNari V1.4.4 — V2 UI Restore + V1.4 Tracking Core
 
-V1.4.2 deliberately rolls the product surface back toward the cleaner V1.3 experience while keeping the reliable live-location engine introduced later.
+This release deliberately restores the V1.2 visual/interaction model while retaining the V1.4 tracking engine underneath.
 
-## What this version keeps
+## Locked product surface
 
-- Press-and-hold SOS
-- Consent-based Trusted Circle
-- Delivery and acknowledgement states
-- Find-My-style live map
-- Device heartbeat independent from GPS movement
-- Continuous GPS stream with `distanceFilter: 0`
-- Android target interval of ~5 seconds during an active emergency
-- Forced fresh GPS request if the stream stays quiet for ~8 seconds
-- Background Android location foreground service
-- Live route trail, speed, heading, distance travelled and accuracy
-- Last-known location when a device disconnects
-- Offline GPS queue with original timestamps
-- Immediate reconnect health check and queued-location replay
-- Persistent SOS history
-- Practice mode
-- False-alarm cancellation and "I'm safe" resolution
+- Home / Circle / Inbox / History navigation from V1.2.
+- Large press-and-hold SOS and the older richer card layout.
+- GPS coordinates remain visible in SOS/inbox cards.
+- `Open map` launches the latest coordinates in the installed map app.
+- Location timeline remains available from Inbox.
+- No dedicated in-app map tab.
+- No Nearby / Safety Presence.
+- No Journey Guard.
+- SMS is a visible placeholder only; this build requests no SMS permission and sends no SMS.
 
-## What was removed
+## V1.4 tracking engine retained
 
-- Journey Guard
-- Safety Presence / nearby-device radar
-- SMS fallback and all SEND_SMS native permission code
-
-Those features are intentionally out of this build so the emergency core can be tested without unrelated UI or platform-permission failures.
-
-## UI direction
-
-V1.4.2 restores the calmer V1.3-style Home screen: status chips, one dominant SOS control, one live-location status surface, and one emergency-session surface. The map remains a first-class bottom-navigation destination.
-
-Bottom navigation:
-
-`Home · Map · Circle · Inbox`
-
-SOS history is available from the top-right menu.
-
-## Backend
-
-FastAPI + SQLAlchemy + SQLite for the prototype. Existing V1.4.x databases are compatible; unused legacy tables such as `safety_presence_devices` may remain in an upgraded SQLite file but are no longer exposed by the API.
-
-Health check:
-
-```bash
-curl http://127.0.0.1:3000/health
-```
-
-Expected version: `1.4.2`.
+- Android `LocationAccuracy.bestForNavigation`.
+- `distanceFilter: 0`.
+- Requested ~5 second position interval during an active emergency.
+- Foreground emergency location service on Android.
+- Separate device heartbeat, GPS-fix and server-sync state.
+- Forced GPS refresh if the normal stream is stale.
+- Automatic stream restart after an error/completion.
+- Offline GPS queue stored locally.
+- Connectivity recovery + immediate heartbeat + forced GPS + queued trail replay.
+- Batch replay preserves original location timestamps.
+- Backend stores speed/heading/liveness timestamps.
+- Inbox liveness badge uses heartbeat freshness, not whether coordinates changed.
 
 ## Run backend
 
@@ -61,7 +39,11 @@ pip install -r requirements.txt
 python run.py
 ```
 
-## Prepare mobile wrapper on Arch/fish
+By default the backend uses `./data/viranari.db`. Set `VIRANARI_HOST`, `VIRANARI_PORT`, `VIRANARI_DB_PATH` and `VIRANARI_JWT_SECRET` in `.env` for deployment.
+
+## Run Android app
+
+From the repository root:
 
 ```fish
 ./scripts/prepare_mobile.fish
@@ -69,26 +51,11 @@ cd mobile
 flutter clean
 flutter pub get
 flutter analyze
+flutter run --dart-define=VIRANARI_API_BASE=https://YOUR_API_DOMAIN
 ```
 
-Run against a VPS:
+For a local Android emulator backend use `http://10.0.2.2:3000`.
 
-```fish
-flutter run --dart-define=VIRANARI_API_BASE=https://YOUR-API-DOMAIN
-```
+## Important
 
-or temporarily:
-
-```fish
-flutter run --dart-define=VIRANARI_API_BASE=http://YOUR-VPS-IP:3000
-```
-
-## Priority physical-phone test
-
-1. Trigger SOS on Phone A.
-2. Phone B opens Map or Inbox -> Live Track.
-3. Leave Phone A stationary for at least one minute: it should remain LIVE because heartbeat is separate from GPS movement.
-4. Walk with Phone A: marker/trail should move and distance should increase.
-5. Disable data/Wi-Fi on Phone A: Phone B eventually shows DELAYED/OFFLINE but keeps the last marker.
-6. Re-enable connectivity: Phone A should heartbeat immediately, replay queued GPS points and return to LIVE.
-
+The backend tests pass in the packaging environment. Flutter is not installed in that environment, so `flutter analyze` and the Android build must be run on the development machine before relying on the APK.

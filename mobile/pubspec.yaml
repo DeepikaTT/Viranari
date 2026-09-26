@@ -1,7 +1,7 @@
 name: viranari_app
-description: ViraNari v1.4.2 Core Restore with V1.3 UI and reliable Find-My-style live tracking.
+description: ViraNari v1.4.4 V2 UI Restore with V1.4 reliable location tracking.
 publish_to: 'none'
-version: 1.4.2+18
+version: 1.4.4+20
 
 environment:
   sdk: '>=3.13.0 <4.0.0'
@@ -18,8 +18,6 @@ dependencies:
   battery_plus: ^7.1.1
   connectivity_plus: ^7.3.1
   url_launcher: ^6.3.2
-  flutter_map: ^8.2.1
-  latlong2: ^0.9.1
 
 dev_dependencies:
   flutter_test:
