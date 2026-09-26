@@ -11,7 +11,6 @@ import 'package:url_launcher/url_launcher.dart';
 import '../core/api_client.dart';
 import '../core/models.dart';
 import '../core/session.dart';
-import '../core/storage.dart';
 import '../core/theme.dart';
 import '../services/device_status_service.dart';
 import '../services/location_service.dart';
@@ -19,7 +18,8 @@ import '../services/location_sync_service.dart';
 import '../services/offline_queue.dart';
 import '../widgets/sos_button.dart';
 import '../widgets/status_chip.dart';
-import 'safe_reach_sheet.dart';
+import 'safety_compass_screen.dart';
+import 'safety_map_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key, required this.session});
@@ -35,7 +35,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final _queue = OfflineQueueService();
   final _locationSync = LocationSyncService();
   final _connectivity = Connectivity();
-  final _contactCache = TrustedContactCacheStore();
 
   bool _busy = false;
   bool _backendOnline = false;
@@ -44,6 +43,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   bool _backgroundAlways = false;
   bool _heartbeatRunning = false;
   bool _recoveryRunning = false;
+  bool _silentRevealed = false;
+  bool _silentArming = false;
+  int _lastSilentRequest = 0;
 
   int _pending = 0;
   int _trustedCount = 0;
@@ -58,7 +60,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   DateTime? _lastPhoneFix;
   DateTime? _lastServerSync;
   DateTime? _lastForcedGpsAt;
-  DateTime? _lastSafeReachSearchAt;
   Position? _lastPosition;
   AlertRecord? _latest;
 
@@ -70,6 +71,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _lastSilentRequest = widget.session.silentSosRequests.value;
+    widget.session.silentSosRequests.addListener(_handleSilentSosRequest);
     _connectivitySubscription = _connectivity.onConnectivityChanged.listen(_handleConnectivityChange);
     _bootstrap();
     _statusTimer = Timer.periodic(const Duration(seconds: 5), (_) => _heartbeat());
@@ -85,6 +88,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    widget.session.silentSosRequests.removeListener(_handleSilentSosRequest);
     _statusTimer?.cancel();
     _connectivitySubscription?.cancel();
     _liveLocationSubscription?.cancel();
@@ -106,14 +110,28 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           _lastHeartbeatAt = active.lastDeviceSeenAt?.toLocal();
           _lastPhoneFix = active.lastGpsFixAt?.toLocal();
           _lastServerSync = active.lastLocationSyncAt?.toLocal();
-          if (active.safeReach == null) _lastSafeReachSearchAt = DateTime.now();
-          _message = 'Emergency session restored. Live tracking resumed.';
+          _silentRevealed = false;
+          _message = active.silentMode ? 'Safety session restored.' : 'Emergency session restored. Live tracking resumed.';
         });
         await _startLiveTracking(active.id);
       }
     } catch (_) {
       // The local UI remains usable even if the backend is temporarily offline.
     }
+  }
+
+  void _handleSilentSosRequest() {
+    final request = widget.session.silentSosRequests.value;
+    if (request == _lastSilentRequest) return;
+    _lastSilentRequest = request;
+    if (_latest?.isActive == true) {
+      if (_latest?.silentMode == true && !_silentRevealed && mounted) {
+        setState(() => _silentRevealed = true);
+      }
+      unawaited(HapticFeedback.selectionClick());
+      return;
+    }
+    unawaited(_sendSos(silent: true));
   }
 
   Future<void> _heartbeat() async {
@@ -148,20 +166,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           _battery = snapshot.batteryPercent;
           _network = snapshot.networkState;
         });
-        final safeReachNeedsRetry = refreshed.safeReach == null ||
-            refreshed.safeReach!.state == 'declined' ||
-            refreshed.safeReach!.state == 'expired';
-        final now = DateTime.now();
-        final retryAge = _lastSafeReachSearchAt == null ? const Duration(days: 1) : now.difference(_lastSafeReachSearchAt!);
-        if (safeReachNeedsRetry && retryAge >= const Duration(seconds: 30)) {
-          _lastSafeReachSearchAt = now;
-          try {
-            final rematched = await widget.session.api.rematchSafeReach(active.id);
-            if (mounted) setState(() => _latest = rematched);
-          } catch (_) {
-            // Trusted Circle + live tracking remain primary even when no responder is available.
-          }
-        }
       } catch (_) {
         if (mounted) setState(() => _backendOnline = false);
         return;
@@ -338,13 +342,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Future<void> _refreshContacts() async {
     try {
       final contacts = await widget.session.api.contacts();
-      await _contactCache.save(contacts);
       final active = contacts.where((c) => c.status == 'active').length;
       if (mounted) setState(() => _trustedCount = active);
-    } catch (_) {
-      final cached = await _contactCache.load();
-      if (mounted) setState(() => _trustedCount = cached.length);
-    }
+    } catch (_) {}
   }
 
   Future<void> _refreshQueue() async {
@@ -465,12 +465,30 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _sendSos() async {
+  Future<void> _openSafetyMap() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => SafetyMapScreen(session: widget.session)),
+    );
+  }
+
+  Future<void> _openSafetyCompass() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => SafetyCompassScreen(session: widget.session)),
+    );
+  }
+
+  Future<void> _revealSilentSession() async {
+    await HapticFeedback.selectionClick();
+    if (mounted) setState(() => _silentRevealed = true);
+  }
+
+  Future<void> _sendSos({bool silent = false}) async {
     if (_busy || _latest?.isActive == true) return;
-    await HapticFeedback.heavyImpact();
+    if (!silent) await HapticFeedback.heavyImpact();
     setState(() {
       _busy = true;
-      _message = 'Getting your GPS location…';
+      _silentArming = silent;
+      _message = silent ? 'Preparing safety session…' : 'Getting your GPS location…';
     });
 
     QueuedAlert? payload;
@@ -487,10 +505,15 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         speedMps: _safeSpeed(position),
         headingDeg: _safeHeading(position),
         isTest: _testMode,
-        note: _testMode ? 'ViraNari TEST DRILL — no real emergency' : 'Emergency SOS from ViraNari mobile app',
+        silentMode: silent,
+        note: _testMode
+            ? 'ViraNari TEST DRILL — no real emergency'
+            : silent
+                ? 'Silent Safety Session from ViraNari mobile app'
+                : 'Emergency SOS from ViraNari mobile app',
       );
 
-      if (mounted) setState(() => _message = 'Sending SOS to your trusted circle…');
+      if (mounted) setState(() => _message = silent ? 'Starting safety session…' : 'Sending SOS to your trusted circle…');
       final alert = await widget.session.api.sendAlert(payload);
       if (mounted) {
         setState(() {
@@ -502,12 +525,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           _battery = snapshot.batteryPercent;
           _network = snapshot.networkState;
           _backendOnline = true;
-          if (alert.safeReach == null) _lastSafeReachSearchAt = DateTime.now();
-          _message = alert.isTest
-              ? 'Test drill active. Trusted contacts see a TEST label.'
-              : alert.recipients.isEmpty
-                  ? 'SOS active, but no Trusted Circle recipient is connected yet.'
-                  : 'SOS active. ${alert.recipients.length} trusted contact${alert.recipients.length == 1 ? '' : 's'} notified.';
+          _silentRevealed = false;
+          _message = alert.silentMode
+              ? 'Safety session active.'
+              : alert.isTest
+                  ? 'Test drill active. Trusted contacts see a TEST label.'
+                  : alert.recipients.isEmpty
+                      ? 'SOS active, but no Trusted Circle recipient is connected yet.'
+                      : 'SOS active. ${alert.recipients.length} trusted contact${alert.recipients.length == 1 ? '' : 's'} notified.';
         });
       }
       await _startLiveTracking(alert.id);
@@ -528,7 +553,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     } finally {
       await _refreshQueue();
       await _refreshContacts();
-      if (mounted) setState(() => _busy = false);
+      if (mounted) setState(() { _busy = false; _silentArming = false; });
     }
   }
 
@@ -604,146 +629,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _showSafeReach() async {
-    final alert = _latest;
-    if (alert == null || !mounted) return;
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      useSafeArea: true,
-      backgroundColor: ViraColors.surface,
-      showDragHandle: true,
-      builder: (_) => SafeReachSheet(session: widget.session, alertId: alert.id, canRematch: true),
-    );
-    await _refreshLatest();
-  }
-
-  Future<List<TrustedContact>> _callableTrustedContacts() async {
-    try {
-      final contacts = await widget.session.api.contacts();
-      await _contactCache.save(contacts);
-      return contacts.where((c) => c.status == 'active' && c.phoneE164 != null && c.phoneE164!.isNotEmpty).toList();
-    } catch (_) {
-      return _contactCache.load();
-    }
-  }
-
-  Future<TrustedContact?> _chooseTrustedContact(List<TrustedContact> contacts, String title) async {
-    if (contacts.isEmpty) return null;
-    if (contacts.length == 1) return contacts.first;
-    if (!mounted) return null;
-    return showModalBottomSheet<TrustedContact>(
-      context: context,
-      useSafeArea: true,
-      showDragHandle: true,
-      builder: (context) => ListView(
-        shrinkWrap: true,
-        padding: const EdgeInsets.fromLTRB(18, 4, 18, 24),
-        children: [
-          Text(title, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 18, color: ViraColors.plum)),
-          const SizedBox(height: 10),
-          ...contacts.map(
-            (contact) => ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const CircleAvatar(child: Icon(Icons.person_outline)),
-              title: Text(contact.alias, style: const TextStyle(fontWeight: FontWeight.w800)),
-              subtitle: Text('${contact.name} · ${contact.phoneE164}'),
-              trailing: const Icon(Icons.chevron_right_rounded),
-              onTap: () => Navigator.pop(context, contact),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _recordClientAction(String action, Map<String, dynamic> metadata) async {
-    final alert = _latest;
-    if (alert == null || !_backendOnline) return;
-    try {
-      await widget.session.api.recordClientAction(alert.id, action, metadata);
-    } catch (_) {
-      // The safety action itself must not depend on logging succeeding.
-    }
-  }
-
-  Future<void> _callEmergencyServices() async {
-    const emergencyNumber = String.fromEnvironment('VIRANARI_EMERGENCY_NUMBER', defaultValue: '112');
-    final opened = await launchUrl(Uri(scheme: 'tel', path: emergencyNumber), mode: LaunchMode.externalApplication);
-    if (opened) {
-      await _recordClientAction('emergency_call_opened', {'number': emergencyNumber});
-    } else if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not open the phone app.')));
-    }
-  }
-
-  Future<void> _callTrustedContact() async {
-    final callable = await _callableTrustedContacts();
-    if (callable.isEmpty) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No accepted Trusted Circle contact has a phone number. Open Circle and add/update phone numbers first.')),
-        );
-      }
-      return;
-    }
-    final selected = await _chooseTrustedContact(callable, 'Call trusted contact');
-    if (selected == null || selected.phoneE164 == null) return;
-    final opened = await launchUrl(Uri(scheme: 'tel', path: selected.phoneE164!), mode: LaunchMode.externalApplication);
-    if (opened) {
-      await _recordClientAction('trusted_call_opened', {'contact_id': selected.id, 'contact_alias': selected.alias});
-    } else if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not open the phone app.')));
-    }
-  }
-
-  Future<void> _sendSmsFallback() async {
-    final alert = _latest;
-    if (alert == null || !alert.isActive) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Start an SOS before sending an emergency SMS update.')));
-      return;
-    }
-    final contacts = await _callableTrustedContacts();
-    if (contacts.isEmpty) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No trusted contact phone numbers are available. Add/update them in Circle first.')),
-        );
-      }
-      return;
-    }
-    final selected = await _chooseTrustedContact(contacts, 'Send SMS location update');
-    if (selected == null || selected.phoneE164 == null) return;
-
-    final position = _lastPosition;
-    final latitude = position?.latitude ?? alert.latitude;
-    final longitude = position?.longitude ?? alert.longitude;
-    final accuracy = position?.accuracy ?? alert.accuracyM;
-    final captured = _lastPhoneFix ?? alert.lastGpsFixAt?.toLocal() ?? DateTime.now();
-    final trip = alert.id.length > 6 ? alert.id.substring(0, 6).toUpperCase() : alert.id.toUpperCase();
-    final message = StringBuffer()
-      ..writeln('ViraNari SOS | Trip $trip')
-      ..writeln('Location: ${latitude.toStringAsFixed(6)}, ${longitude.toStringAsFixed(6)}')
-      ..writeln('Captured: ${DateFormat('h:mm:ss a, d MMM').format(captured)}')
-      ..writeln('Accuracy: ${accuracy == null ? 'unknown' : '±${accuracy.toStringAsFixed(0)}m'} | Battery: ${_battery == null ? 'unknown' : '$_battery%'}')
-      ..writeln('Map: https://maps.google.com/?q=$latitude,$longitude')
-      ..write('Emergency is active. Please contact me or emergency services if I stop responding.');
-
-    final uri = Uri(scheme: 'sms', path: selected.phoneE164!, queryParameters: {'body': message.toString()});
-    final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
-    if (opened) {
-      await _recordClientAction('sms_fallback_prepared', {
-        'contact_id': selected.id,
-        'contact_alias': selected.alias,
-        'latitude': latitude,
-        'longitude': longitude,
-        'captured_at': captured.toUtc().toIso8601String(),
-      });
-    } else if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not open the Messages app.')));
-    }
-  }
-
   String _fmt(DateTime? time) => time == null ? 'waiting' : DateFormat('h:mm:ss a').format(time.toLocal());
 
   String get _livenessLabel {
@@ -772,9 +657,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    final state = _latest?.deliveryState;
     final active = _latest?.isActive == true;
-    final batteryText = _battery == null ? 'Battery ?' : 'Battery $_battery%';
+    final latest = _latest;
+    final silentActive = active && latest?.silentMode == true && !_silentRevealed;
+    final stealthMode = _silentArming || silentActive;
+    final lowBattery = (_battery ?? 100) <= 20;
 
     return RefreshIndicator(
       onRefresh: () async {
@@ -783,7 +670,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         await _refreshLatest();
       },
       child: ListView(
-        padding: const EdgeInsets.fromLTRB(20, 18, 20, 110),
+        padding: const EdgeInsets.fromLTRB(20, 14, 20, 110),
         children: [
           Row(
             children: [
@@ -791,264 +678,245 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('Hi ${widget.session.user?.name ?? ''}', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900, color: ViraColors.plum)),
-                    const SizedBox(height: 4),
-                    Text(active ? 'Emergency response mode' : 'Ready when seconds matter', style: const TextStyle(color: ViraColors.mutedPlum)),
+                    Text(
+                      'Live Safety',
+                      style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                            fontWeight: FontWeight.w900,
+                            color: ViraColors.plum,
+                          ),
+                    ),
+                    const Text(
+                      'One action. Stay visible to the people you trust.',
+                      style: TextStyle(color: ViraColors.mutedPlum),
+                    ),
                   ],
                 ),
               ),
-              IconButton.filledTonal(onPressed: () => _refreshLatest(), icon: const Icon(Icons.sync_rounded), tooltip: 'Refresh emergency status'),
+              Switch(value: _testMode, onChanged: active ? null : (v) => setState(() => _testMode = v)),
+              const Text('Test'),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              StatusChip(
+                label: _backendOnline ? 'Server online' : 'Server offline',
+                icon: Icons.cloud_outlined,
+                good: _backendOnline,
+              ),
+              StatusChip(
+                label: _network.toUpperCase(),
+                icon: Icons.signal_cellular_alt,
+                good: _network != 'offline',
+              ),
+              StatusChip(
+                label: '${_battery ?? '--'}% battery',
+                icon: Icons.battery_5_bar,
+                good: !lowBattery,
+              ),
+              StatusChip(
+                label: '$_trustedCount trusted',
+                icon: Icons.group_outlined,
+                good: _trustedCount > 0,
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _openSafetyMap,
+                  icon: const Icon(Icons.public_rounded),
+                  label: const Text('Safety Map'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _openSafetyCompass,
+                  icon: const Icon(Icons.explore_rounded),
+                  label: const Text('Compass'),
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 18),
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: active ? ViraColors.dangerSoft : ViraColors.lilac,
-              borderRadius: BorderRadius.circular(24),
-              border: Border.all(color: active ? ViraColors.pinkDark.withValues(alpha: .35) : ViraColors.lilacStrong),
-            ),
-            child: Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                StatusChip(label: _backendOnline ? 'Server reachable' : 'Server offline', icon: _backendOnline ? Icons.cloud_done_outlined : Icons.cloud_off_outlined, good: _backendOnline),
-                StatusChip(label: _network.toUpperCase(), icon: _network == 'offline' ? Icons.signal_wifi_off : Icons.network_check, good: _network != 'offline' && _network != 'unknown'),
-                StatusChip(label: batteryText, icon: Icons.battery_5_bar, good: (_battery ?? 100) > 20),
-                StatusChip(label: '$_trustedCount trusted', icon: Icons.group_outlined, good: _trustedCount > 0),
-                StatusChip(label: _pending == 0 ? 'SOS queue clear' : '$_pending SOS queued', icon: _pending == 0 ? Icons.cloud_done_outlined : Icons.cloud_off_outlined, good: _pending == 0),
-                StatusChip(label: _queuedLocations == 0 ? 'GPS journal synced' : '$_queuedLocations GPS queued', icon: _queuedLocations == 0 ? Icons.route_outlined : Icons.save_alt_rounded, good: _queuedLocations == 0),
-              ],
-            ),
-          ),
-          const SizedBox(height: 28),
-          if (active) _ActiveEmergencyBanner(alert: _latest!),
-          if (active) ...[
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                  child: FilledButton.tonalIcon(
-                    onPressed: _showSafeReach,
-                    icon: const Icon(Icons.verified_user_rounded),
-                    label: Text(_latest?.safeReach == null ? 'Verified help' : _latest!.safeReach!.statusLabel),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: _callTrustedContact,
-                    icon: const Icon(Icons.call_rounded),
-                    label: const Text('Call trusted'),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton.icon(
-                style: FilledButton.styleFrom(backgroundColor: ViraColors.pinkDark),
-                onPressed: _callEmergencyServices,
-                icon: const Icon(Icons.local_police_outlined),
-                label: const Text('Call emergency services'),
-              ),
-            ),
-            const SizedBox(height: 18),
-          ],
-          if (!active) ...[
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              decoration: BoxDecoration(color: _testMode ? ViraColors.lilac : Colors.white, borderRadius: BorderRadius.circular(18), border: Border.all(color: ViraColors.lilacStrong)),
-              child: Row(
-                children: [
-                  const Icon(Icons.science_outlined, color: ViraColors.plum),
-                  const SizedBox(width: 10),
-                  const Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text('Practice mode', style: TextStyle(fontWeight: FontWeight.w900)), Text('Send a clearly labelled test alert to verify your setup.', style: TextStyle(color: ViraColors.mutedPlum, fontSize: 12))])),
-                  Switch(value: _testMode, onChanged: (value) => setState(() => _testMode = value)),
-                ],
-              ),
-            ),
-            const SizedBox(height: 18),
-          ],
-          Center(child: SosButton(onPressed: (_busy || active) ? null : _sendSos, busy: _busy, label: _testMode ? 'HOLD TO TEST' : 'HOLD FOR HELP')), 
-          const SizedBox(height: 12),
           Center(
-            child: Text(
-              active ? 'SOS already active — live location is being shared' : 'Press and hold. No typing required.',
-              style: const TextStyle(color: ViraColors.mutedPlum, fontWeight: FontWeight.w700),
-              textAlign: TextAlign.center,
+            child: SosButton(
+              onPressed: silentActive ? _revealSilentSession : active ? null : () => _sendSos(),
+              busy: _busy && !_silentArming,
+              label: _testMode ? 'HOLD TEST SOS' : null,
             ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 14),
+          Text(
+            stealthMode
+                ? 'Press and hold. No typing required.'
+                : active
+                    ? 'SOS ACTIVE — live location sharing continues'
+                    : 'Press and hold. No typing required.',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontWeight: FontWeight.w800,
+              color: active && !stealthMode ? ViraColors.pinkDark : ViraColors.plum,
+            ),
+          ),
+          if (!stealthMode) ...[
+            const SizedBox(height: 14),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: active ? ViraColors.dangerSoft : ViraColors.surface,
+                borderRadius: BorderRadius.circular(22),
+              ),
+              child: Text(_message, style: const TextStyle(height: 1.4, fontWeight: FontWeight.w700)),
+            ),
+          ],
+          const SizedBox(height: 14),
           Container(
             padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: active && !_backendOnline ? const Color(0xFFFFF1D9) : ViraColors.surface,
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: active && !_backendOnline ? ViraColors.warning : ViraColors.lilacStrong),
-            ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Icon(Icons.sms_outlined, color: ViraColors.plum),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('SMS fallback', style: TextStyle(fontWeight: FontWeight.w900, color: ViraColors.plum)),
-                      const SizedBox(height: 3),
-                      const Text(
-                        'Works without mobile data when cellular SMS is available. ViraNari prepares your latest GPS, timestamp, accuracy and battery in the phone\'s Messages app; you confirm Send.',
-                        style: TextStyle(color: ViraColors.mutedPlum, height: 1.35),
-                      ),
-                      if (active) ...[
-                        const SizedBox(height: 10),
-                        FilledButton.tonalIcon(
-                          onPressed: _sendSmsFallback,
-                          icon: const Icon(Icons.send_to_mobile_rounded),
-                          label: Text(_backendOnline ? 'Prepare SMS update' : 'Internet down — send SMS update'),
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-          if ((_battery ?? 100) <= 20) ...[
-            const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(color: const Color(0xFFFFF1D9), borderRadius: BorderRadius.circular(18)),
-              child: const Row(children: [Icon(Icons.battery_alert_rounded, color: ViraColors.warning), SizedBox(width: 10), Expanded(child: Text('Low battery: keep the emergency active, reduce nonessential screen use, and move toward a safe public place if possible.', style: TextStyle(fontWeight: FontWeight.w700)))]),
-            ),
-          ],
-          const SizedBox(height: 24),
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 250),
-            padding: const EdgeInsets.all(18),
-            decoration: BoxDecoration(
-              color: state == 'Acknowledged' ? ViraColors.successSoft : Colors.white,
-              borderRadius: BorderRadius.circular(22),
-              border: Border.all(color: state == 'Acknowledged' ? ViraColors.success : ViraColors.lilacStrong),
-            ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Icon(state == 'Acknowledged' ? Icons.check_circle : active ? Icons.crisis_alert : Icons.info_outline, color: state == 'Acknowledged' ? ViraColors.success : active ? ViraColors.pinkDark : ViraColors.plum),
-                const SizedBox(width: 12),
-                Expanded(child: Text(_message, style: const TextStyle(height: 1.35, fontWeight: FontWeight.w600))),
-              ],
-            ),
-          ),
-          if (_latest != null) ...[
-            const SizedBox(height: 16),
-            _LatestAlertCard(alert: _latest!),
-          ],
-          if (active) ...[
-            const SizedBox(height: 14),
-            FilledButton.icon(onPressed: _resolveSafe, icon: const Icon(Icons.health_and_safety_outlined), label: const Text("I'm safe — end emergency")),
-            const SizedBox(height: 6),
-            TextButton(onPressed: _cancelFalseAlarm, child: const Text('Accidental trigger? Cancel false alarm')),
-          ],
-          const SizedBox(height: 18),
-          const Text(
-            'ViraNari distinguishes SENT, DELIVERED and ACKNOWLEDGED. During an active session it keeps updating the latest location instead of assuming the first GPS point is enough.',
-            style: TextStyle(color: ViraColors.mutedPlum, height: 1.45),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _ActiveEmergencyBanner extends StatelessWidget {
-  const _ActiveEmergencyBanner({required this.alert});
-  final AlertRecord alert;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: ViraColors.midnight,
-        borderRadius: BorderRadius.circular(26),
-        boxShadow: [BoxShadow(color: ViraColors.midnight.withValues(alpha: .18), blurRadius: 28, offset: const Offset(0, 12))],
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 50,
-            height: 50,
-            decoration: const BoxDecoration(color: ViraColors.pink, shape: BoxShape.circle),
-            child: const Icon(Icons.sensors_rounded, color: Colors.white),
-          ),
-          const SizedBox(width: 14),
-          Expanded(
+            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(22)),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(alert.isTest ? 'TEST DRILL ACTIVE' : 'EMERGENCY ACTIVE', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, letterSpacing: 1)),
-                const SizedBox(height: 4),
-                Text('Live update ${DateFormat('h:mm:ss a').format(alert.updatedAt.toLocal())}', style: const TextStyle(color: Color(0xFFD4E5E4))),
+                Row(
+                  children: [
+                    const Icon(Icons.my_location, color: ViraColors.plum),
+                    const SizedBox(width: 8),
+                    const Expanded(
+                      child: Text(
+                        'Live location',
+                        style: TextStyle(fontSize: 17, fontWeight: FontWeight.w900),
+                      ),
+                    ),
+                    Text(
+                      _livenessLabel,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w900,
+                        color: _livenessColor,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                _MetricRow(label: 'Device heartbeat', value: _fmt(_latest?.lastDeviceSeenAt ?? _lastHeartbeatAt), good: _livenessLabel == 'LIVE'),
+                _MetricRow(label: 'Phone GPS fix', value: _fmt(_lastPhoneFix), good: _lastPhoneFix != null),
+                _MetricRow(label: 'Server location sync', value: _fmt(_lastServerSync), good: _lastServerSync != null && _syncError == null),
+                _MetricRow(label: 'Queued GPS points', value: '$_queuedLocations', good: _queuedLocations == 0),
+                if (_lastPosition != null)
+                  _MetricRow(
+                    label: 'GPS accuracy',
+                    value: '±${_lastPosition!.accuracy.toStringAsFixed(0)} m',
+                    good: _lastPosition!.accuracy < 30,
+                  ),
+                if (_lastPosition != null || _latest != null) ...[
+                  const SizedBox(height: 8),
+                  SelectableText(
+                    'GPS: ${(_lastPosition?.latitude ?? _latest!.latitude).toStringAsFixed(6)}, ${(_lastPosition?.longitude ?? _latest!.longitude).toStringAsFixed(6)}',
+                    style: const TextStyle(fontWeight: FontWeight.w800, color: ViraColors.plum),
+                  ),
+                  const SizedBox(height: 8),
+                  OutlinedButton.icon(
+                    onPressed: _openCurrentMap,
+                    icon: const Icon(Icons.map_outlined),
+                    label: const Text('Open map'),
+                  ),
+                ],
+                if (_syncError != null) ...[
+                  const SizedBox(height: 8),
+                  Text(_syncError!, style: const TextStyle(color: ViraColors.pinkDark, fontWeight: FontWeight.w800)),
+                ],
+                if (active && !_backgroundAlways) ...[
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      const Expanded(
+                        child: Text(
+                          'For strongest background tracking, enable “Allow all the time” location permission.',
+                          style: TextStyle(color: ViraColors.warning),
+                        ),
+                      ),
+                      TextButton(onPressed: _location.openAppSettings, child: const Text('Settings')),
+                    ],
+                  ),
+                ],
               ],
             ),
           ),
-          const Icon(Icons.location_searching, color: ViraColors.gold),
+          if (_pending > 0) ...[
+            const SizedBox(height: 12),
+            Text(
+              '$_pending SOS request${_pending == 1 ? '' : 's'} waiting for server reconciliation.',
+              style: const TextStyle(color: ViraColors.warning, fontWeight: FontWeight.w800),
+            ),
+          ],
+          if (latest != null && !stealthMode) ...[
+            const SizedBox(height: 14),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(color: ViraColors.lilac, borderRadius: BorderRadius.circular(22)),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'Emergency ${latest.state.toUpperCase()}',
+                          style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w900),
+                        ),
+                      ),
+                      Text(
+                        latest.deliveryState,
+                        style: const TextStyle(fontWeight: FontWeight.w900, color: ViraColors.plum),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Text('${latest.acknowledgedCount}/${latest.recipients.length} acknowledged · ${latest.deliveredCount}/${latest.recipients.length} delivered'),
+                  if (active) ...[
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        Expanded(child: FilledButton.tonal(onPressed: _resolveSafe, child: const Text("I'm safe"))),
+                        const SizedBox(width: 8),
+                        Expanded(child: TextButton(onPressed: _cancelFalseAlarm, child: const Text('False alarm'))),
+                      ],
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
         ],
       ),
     );
   }
 }
 
-class _LatestAlertCard extends StatelessWidget {
-  const _LatestAlertCard({required this.alert});
-  final AlertRecord alert;
+class _MetricRow extends StatelessWidget {
+  const _MetricRow({required this.label, required this.value, required this.good});
+  final String label;
+  final String value;
+  final bool good;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(22)),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
         children: [
-          Row(
-            children: [
-              const Expanded(child: Text('Latest SOS', style: TextStyle(fontWeight: FontWeight.w900, color: ViraColors.plum, fontSize: 17))),
-              if (alert.isTest) const Padding(padding: EdgeInsets.only(right: 8), child: Text('TEST', style: TextStyle(color: ViraColors.gold, fontWeight: FontWeight.w900, fontSize: 11))),
-              Text(alert.state.toUpperCase(), style: TextStyle(fontWeight: FontWeight.w900, fontSize: 11, color: alert.isActive ? ViraColors.pinkDark : ViraColors.mutedPlum)),
-            ],
+          Icon(
+            good ? Icons.check_circle : Icons.schedule,
+            size: 17,
+            color: good ? ViraColors.success : ViraColors.warning,
           ),
-          const SizedBox(height: 8),
-          Text('${alert.latitude.toStringAsFixed(5)}, ${alert.longitude.toStringAsFixed(5)}', style: const TextStyle(color: ViraColors.mutedPlum)),
-          const SizedBox(height: 4),
-          Wrap(
-            spacing: 12,
-            children: [
-              if (alert.batteryPercent != null) Text('Battery ${alert.batteryPercent}%', style: const TextStyle(color: ViraColors.mutedPlum)),
-              if (alert.networkState != null) Text(alert.networkState!.toUpperCase(), style: const TextStyle(color: ViraColors.mutedPlum)),
-            ],
-          ),
-          const SizedBox(height: 12),
-          if (alert.recipients.isEmpty)
-            const Text('No active trusted contacts.', style: TextStyle(fontWeight: FontWeight.w700))
-          else
-            ...alert.recipients.map(
-              (r) => Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Row(
-                  children: [
-                    Icon(r.acknowledgedAt != null ? Icons.check_circle : r.deliveredAt != null ? Icons.mark_email_read_outlined : Icons.schedule_send_outlined, size: 20, color: r.acknowledgedAt != null ? ViraColors.success : ViraColors.plum),
-                    const SizedBox(width: 8),
-                    Expanded(child: Text(r.name, style: const TextStyle(fontWeight: FontWeight.w700))),
-                    Text(r.acknowledgedAt != null ? 'ACKNOWLEDGED' : r.deliveredAt != null ? 'DELIVERED' : 'SENT', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w900, color: r.acknowledgedAt != null ? ViraColors.success : ViraColors.mutedPlum)),
-                  ],
-                ),
-              ),
-            ),
+          const SizedBox(width: 7),
+          Expanded(child: Text(label)),
+          Text(value, style: const TextStyle(fontWeight: FontWeight.w800)),
         ],
       ),
     );

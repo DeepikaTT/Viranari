@@ -1,12 +1,16 @@
-ViraNari V1.6.0 validation
+ViraNari V1.5.0 backend test result
+===================================
+32 automated backend tests passed.
 
-Backend pytest: 38 passed
+Covered areas include:
+- authentication and Trusted Circle consent
+- idempotent SOS and persistence
+- delivery / acknowledgement
+- live GPS, heartbeat and offline replay
+- SQLite compatibility migrations
+- Silent SOS round-trip to responder Inbox
+- anonymous Safety Map mutual participation and identity minimization
+- verified Safe Node filtering
 
-Validated backend additions:
-- existing V1.4.4/V1.5.0 API regression suite
-- trusted-contact phone consent behavior
-- client emergency communication events in signed incident record
-- ProofChain remains valid after SMS/call preparation events
-- health advertises V1.6.0 SMS fallback and SQLite offline journal
-
-Mobile Flutter compilation was not executed in the package-generation environment because Flutter is not installed there. Run flutter analyze/build on the development machine before release.
+Mobile source is included, but the packaging container does not contain Flutter.
+Run `flutter analyze` and a physical-device build on the Arch development machine before demo/deployment.

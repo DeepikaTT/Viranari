@@ -1,7 +1,7 @@
 name: viranari_app
-description: ViraNari v1.6.0 Resilient Commute, preserving V1.4.4 UI/tracking plus SMS fallback and incident records.
+description: ViraNari v1.5 Safety Around Me with anonymous Safety Map, Silent SOS and Safety Compass.
 publish_to: 'none'
-version: 1.6.0+22
+version: 1.5.0+20
 
 environment:
   sdk: '>=3.13.0 <4.0.0'
@@ -18,7 +18,9 @@ dependencies:
   battery_plus: ^7.1.1
   connectivity_plus: ^7.3.1
   url_launcher: ^6.3.2
-  sqflite: ^2.4.2
+  flutter_map: ^8.2.1
+  latlong2: ^0.9.1
+  flutter_compass: ^0.8.1
 
 dev_dependencies:
   flutter_test:

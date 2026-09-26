@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
 from pydantic import BaseModel, EmailStr, Field
 
 PHONE_PATTERN = r"^\+[1-9][0-9]{7,14}$"
@@ -34,7 +33,6 @@ class UserOut(BaseModel):
     name: str
     email: EmailStr
     phone_e164: str | None = None
-    role: str = "traveler"
 
 
 class ContactCreateIn(BaseModel):
@@ -59,12 +57,6 @@ class ContactOut(BaseModel):
     accepted_at: datetime | None = None
 
 
-
-
-class ClientActionIn(BaseModel):
-    action: Literal["sms_fallback_prepared", "trusted_call_opened", "emergency_call_opened"]
-    metadata: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
-
 class AlertCreateIn(BaseModel):
     idempotency_key: str = Field(min_length=8, max_length=100)
     latitude: float = Field(ge=-90, le=90)
@@ -75,6 +67,7 @@ class AlertCreateIn(BaseModel):
     speed_mps: float | None = Field(default=None, ge=0)
     heading_deg: float | None = Field(default=None, ge=0, lt=360)
     is_test: bool = False
+    silent_mode: bool = False
     note: str | None = Field(default=None, max_length=500)
 
 
@@ -124,102 +117,6 @@ class RecipientStatusOut(BaseModel):
     acknowledged_at: datetime | None
 
 
-class ResponderAssignmentOut(BaseModel):
-    assignment_id: str
-    responder_profile_id: str
-    responder_name: str
-    organization_name: str
-    category: str
-    phone_e164: str | None = None
-    state: str
-    distance_m: float
-    offered_at: datetime
-    accepted_at: datetime | None = None
-    arrived_at: datetime | None = None
-    completed_at: datetime | None = None
-
-
-class ResponderVerifyIn(BaseModel):
-    user_email: EmailStr
-    organization_name: str = Field(min_length=2, max_length=120)
-    category: str = Field(default="security", min_length=2, max_length=50)
-    service_radius_m: int = Field(default=3000, ge=100, le=50000)
-    latitude: float | None = Field(default=None, ge=-90, le=90)
-    longitude: float | None = Field(default=None, ge=-180, le=180)
-    is_available: bool = True
-
-
-class ResponderProfileUpdateIn(BaseModel):
-    latitude: float = Field(ge=-90, le=90)
-    longitude: float = Field(ge=-180, le=180)
-    is_available: bool = True
-    service_radius_m: int | None = Field(default=None, ge=100, le=50000)
-
-
-class ResponderProfileOut(BaseModel):
-    id: str
-    user_id: str
-    responder_name: str
-    organization_name: str
-    category: str
-    verification_status: str
-    is_available: bool
-    service_radius_m: int
-    latitude: float | None = None
-    longitude: float | None = None
-    last_seen_at: datetime | None = None
-
-
-class ResponderIncidentOut(BaseModel):
-    alert_id: str
-    sender_name: str
-    sender_phone_e164: str | None = None
-    latitude: float
-    longitude: float
-    accuracy_m: float | None = None
-    note: str | None = None
-    state: str
-    assignment: ResponderAssignmentOut
-
-
-class ProofEventOut(BaseModel):
-    id: str
-    sequence: int
-    event_type: str
-    actor_type: str
-    actor_user_id: str | None = None
-    payload: dict
-    previous_hash: str
-    event_hash: str
-    signature: str
-    key_id: str
-    created_at: datetime
-
-
-class ProofChainOut(BaseModel):
-    alert_id: str
-    algorithm: str = "Ed25519 + SHA-256 hash chain"
-    key_id: str
-    public_key_b64: str
-    events: list[ProofEventOut]
-
-
-class ProofVerificationOut(BaseModel):
-    alert_id: str
-    valid: bool
-    event_count: int
-    hash_chain_valid: bool
-    signatures_valid: bool
-    key_id: str
-    first_invalid_sequence: int | None = None
-
-
-class ProofPublicKeyOut(BaseModel):
-    algorithm: str = "Ed25519"
-    key_id: str
-    public_key_b64: str
-
-
 class AlertOut(BaseModel):
     id: str
     owner_id: str
@@ -231,6 +128,7 @@ class AlertOut(BaseModel):
     battery_percent: int | None
     network_state: str | None
     is_test: bool
+    silent_mode: bool
     note: str | None
     state: str
     created_at: datetime
@@ -240,7 +138,6 @@ class AlertOut(BaseModel):
     last_device_seen_at: datetime | None
     last_gps_fix_at: datetime | None
     last_location_sync_at: datetime | None
-    safe_reach: ResponderAssignmentOut | None = None
     recipients: list[RecipientStatusOut]
 
 
@@ -255,6 +152,7 @@ class InboxAlertOut(BaseModel):
     battery_percent: int | None
     network_state: str | None
     is_test: bool
+    silent_mode: bool
     state: str
     note: str | None
     created_at: datetime
@@ -264,7 +162,33 @@ class InboxAlertOut(BaseModel):
     last_device_seen_at: datetime | None
     last_gps_fix_at: datetime | None
     last_location_sync_at: datetime | None
-    safe_reach: ResponderAssignmentOut | None = None
+
+
+class PresenceUpdateIn(BaseModel):
+    device_id: str = Field(min_length=8, max_length=80)
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    enabled: bool = True
+
+
+class PresencePointOut(BaseModel):
+    approx_distance_m: int
+    bearing_deg: int
+    age_seconds: int
+
+
+class SafeNodeOut(BaseModel):
+    id: str
+    name: str
+    category: str
+    latitude: float
+    longitude: float
+    phone_e164: str | None = None
+    address: str | None = None
+    verified: bool
+    approx_distance_m: int
+    bearing_deg: int
+
 
 
 class MessageOut(BaseModel):

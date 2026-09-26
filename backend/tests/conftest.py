@@ -11,7 +11,7 @@ from app.main import create_app
 
 @pytest.fixture()
 def client(tmp_path: Path):
-    cfg = Settings(database_path=str(tmp_path / "test.db"), jwt_secret="test-secret-0123456789-0123456789-xx", admin_key="test-admin-key", proof_key_path=str(tmp_path / "proof.pem"))
+    cfg = Settings(database_path=str(tmp_path / "test.db"), jwt_secret="test-secret-0123456789-0123456789-xx")
     app = create_app(database_path=cfg.database_path, settings=cfg)
     with TestClient(app) as c:
         yield c

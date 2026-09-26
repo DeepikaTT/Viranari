@@ -581,213 +581,140 @@ def test_32_create_app_upgrades_existing_alert_schema_before_indexes(tmp_path):
 
     conn = sqlite3.connect(db_path)
     cols = {row[1] for row in conn.execute("PRAGMA table_info(alerts)")}
-    user_cols = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     conn.close()
     assert {"last_device_seen_at", "last_gps_fix_at", "last_location_sync_at"}.issubset(cols)
-    assert "role" in user_cols
-    assert {"responder_profiles", "responder_assignments", "incident_events"}.issubset(tables)
 
 
-def _verified_responder(client, email="guard@example.com", lat=17.386, lon=78.487):
-    responder = register(client, "Campus Guard", email, phone_e164="+919876543210")
-    verified = client.post(
-        "/admin/responders/verify",
-        headers={"X-ViraNari-Admin-Key": "test-admin-key"},
-        json={
-            "user_email": email,
-            "organization_name": "Campus Security Gate 2",
-            "category": "campus_security",
-            "service_radius_m": 5000,
-            "latitude": lat,
-            "longitude": lon,
-            "is_available": True,
-        },
-    )
-    assert verified.status_code == 200, verified.text
-    return responder, verified.json()
-
-
-def test_29_safe_reach_auto_matches_verified_nearby_responder(client):
-    responder, profile = _verified_responder(client)
+def test_33_silent_sos_roundtrips_and_reaches_inbox(client):
     owner, contact, _ = _pair(client)
-    alert = _alert(client, owner, "safe-reach-0001")
-    assert alert.status_code == 201, alert.text
-    assignment = alert.json()["safe_reach"]
-    assert assignment is not None
-    assert assignment["organization_name"] == "Campus Security Gate 2"
-    assert assignment["state"] == "offered"
-    assert assignment["distance_m"] < 5000
-
-    inbox = client.get("/alerts/inbox", headers=auth(contact["access_token"]))
-    assert inbox.status_code == 200
-    assert inbox.json()[0]["safe_reach"]["organization_name"] == "Campus Security Gate 2"
-
-    incidents = client.get("/responders/incidents", headers=auth(responder["access_token"]))
-    assert incidents.status_code == 200
-    assert incidents.json()[0]["alert_id"] == alert.json()["id"]
-
-
-def test_30_responder_status_transitions_and_proofchain_verify(client):
-    responder, _ = _verified_responder(client)
-    owner, contact, _ = _pair(client)
-    alert = _alert(client, owner, "safe-reach-0002").json()
-
-    accepted = client.post(f"/responders/incidents/{alert['id']}/accept", headers=auth(responder["access_token"]))
-    assert accepted.status_code == 200, accepted.text
-    assert accepted.json()["state"] == "accepted"
-
-    arrived = client.post(f"/responders/incidents/{alert['id']}/arrive", headers=auth(responder["access_token"]))
-    assert arrived.status_code == 200, arrived.text
-    assert arrived.json()["state"] == "arrived"
-
-    proof = client.get(f"/alerts/{alert['id']}/proof", headers=auth(contact["access_token"]))
-    assert proof.status_code == 200, proof.text
-    types = [e["event_type"] for e in proof.json()["events"]]
-    assert "SOS_CREATED" in types
-    assert "SAFE_REACH_RESPONDER_MATCHED" in types
-    assert "SAFE_REACH_ACCEPTED" in types
-    assert "SAFE_REACH_ARRIVED" in types
-
-    verified = client.get(f"/alerts/{alert['id']}/proof/verify", headers=auth(owner["access_token"]))
-    assert verified.status_code == 200, verified.text
-    assert verified.json()["valid"] is True
-    assert verified.json()["hash_chain_valid"] is True
-    assert verified.json()["signatures_valid"] is True
-    assert verified.json()["event_count"] >= 5
-
-
-def test_31_unverified_user_cannot_use_responder_console(client):
-    user = register(client, "Random User", "random@example.com")
-    r = client.get("/responders/me", headers=auth(user["access_token"]))
-    assert r.status_code == 403
-
-
-def test_32_admin_key_required_for_responder_verification(client):
-    register(client, "Guard", "guard2@example.com")
-    r = client.post(
-        "/admin/responders/verify",
+    alert = client.post(
+        "/alerts",
+        headers=auth(owner["access_token"]),
         json={
-            "user_email": "guard2@example.com",
-            "organization_name": "Security Desk",
-            "category": "security",
-            "service_radius_m": 3000,
+            "idempotency_key": "silent-sos-0001",
             "latitude": 17.385,
             "longitude": 78.4867,
-            "is_available": True,
+            "silent_mode": True,
+            "note": "Silent Safety Session",
         },
     )
-    assert r.status_code == 403
+    assert alert.status_code == 201, alert.text
+    assert alert.json()["silent_mode"] is True
+    inbox = client.get("/alerts/inbox", headers=auth(contact["access_token"]))
+    assert inbox.status_code == 200
+    assert inbox.json()[0]["silent_mode"] is True
 
 
-def test_33_proofchain_detects_database_tamper(client):
-    owner = register(client, "Asha", "asha@example.com")
-    alert = _alert(client, owner, "proof-tamper-01").json()
-    app = client.app
-    SessionLocal = app.state.SessionLocal
-    from app.models import IncidentEvent
-    from sqlalchemy import select
-    with SessionLocal() as db:
-        event = db.scalar(select(IncidentEvent).where(IncidentEvent.alert_id == alert["id"]).order_by(IncidentEvent.sequence.asc()))
-        event.payload_json = '{"recipient_count":999}'
-        db.commit()
-    verified = client.get(f"/alerts/{alert['id']}/proof/verify", headers=auth(owner["access_token"]))
-    assert verified.status_code == 200
-    assert verified.json()["valid"] is False
-    assert verified.json()["hash_chain_valid"] is False
+def test_34_presence_requires_mutual_participation_and_returns_no_identity(client):
+    user = register(client, "Asha", "asha@example.com")
+    headers = auth(user["access_token"])
 
-
-def test_34_decline_automatically_rematches_without_leaking_new_assignment(client):
-    responder1, _ = _verified_responder(client, email="guard1@example.com", lat=17.3852, lon=78.4868)
-    responder2, _ = _verified_responder(client, email="guard2@example.com", lat=17.3865, lon=78.4880)
-    owner = register(client, "Asha", "asha@example.com")
-    alert = _alert(client, owner, "safe-rematch-01").json()
-    first_profile = alert["safe_reach"]["responder_profile_id"]
-
-    first_token = responder1["access_token"] if client.get("/responders/incidents", headers=auth(responder1["access_token"])).json() else responder2["access_token"]
-    first_incidents = client.get("/responders/incidents", headers=auth(first_token)).json()
-    assert first_incidents
-    declined = client.post(f"/responders/incidents/{alert['id']}/decline", headers=auth(first_token))
-    assert declined.status_code == 200, declined.text
-    assert declined.json()["state"] == "declined"
-    assert declined.json()["responder_profile_id"] == first_profile
-
-    refreshed = client.get(f"/alerts/detail/{alert['id']}", headers=auth(owner["access_token"])).json()
-    assert refreshed["safe_reach"] is not None
-    assert refreshed["safe_reach"]["responder_profile_id"] != first_profile
-    assert refreshed["safe_reach"]["state"] == "offered"
-
-
-def test_35_unanswered_offer_expires_and_escalates_to_next_responder(tmp_path):
-    cfg = Settings(
-        database_path=str(tmp_path / "escalation.db"),
-        jwt_secret="escalation-secret-0123456789-0123456789",
-        admin_key="test-admin-key",
-        proof_key_path=str(tmp_path / "proof.pem"),
-        responder_offer_timeout_seconds=0,
+    # Device A cannot passively observe until it participates.
+    before = client.get(
+        "/presence/nearby?device_id=device-a-12345678&latitude=17.385&longitude=78.4867&radius_m=2000",
+        headers=headers,
     )
-    with TestClient(create_app(database_path=cfg.database_path, settings=cfg)) as c:
-        r1, _ = _verified_responder(c, email="first@example.com", lat=17.3851, lon=78.4868)
-        r2, _ = _verified_responder(c, email="second@example.com", lat=17.3865, lon=78.4880)
-        owner = register(c, "Asha", "asha@example.com")
-        alert = _alert(c, owner, "safe-timeout-01").json()
-        first_profile = alert["safe_reach"]["responder_profile_id"]
-        heartbeat = c.post(
-            f"/alerts/{alert['id']}/heartbeat",
-            headers=auth(owner["access_token"]),
-            json={"network_state": "mobile"},
+    assert before.status_code == 200
+    assert before.json() == []
+
+    for device_id, lat, lon in [
+        ("device-a-12345678", 17.3850, 78.4867),
+        ("device-b-12345678", 17.3860, 78.4877),
+    ]:
+        r = client.post(
+            "/presence",
+            headers=headers,
+            json={"device_id": device_id, "latitude": lat, "longitude": lon, "enabled": True},
         )
-        assert heartbeat.status_code == 200, heartbeat.text
-        second = heartbeat.json()["safe_reach"]
-        assert second is not None
-        assert second["responder_profile_id"] != first_profile
-        proof = c.get(f"/alerts/{alert['id']}/proof", headers=auth(owner["access_token"])).json()
-        types = [e["event_type"] for e in proof["events"]]
-        assert "SAFE_REACH_OFFER_EXPIRED" in types
+        assert r.status_code == 200, r.text
 
-
-def test_36_phone_is_collected_and_disclosed_only_after_trusted_consent(client):
-    owner = register(client, "Asha", "asha@example.com", phone_e164="+919876543210")
-    contact = register(client, "Maya", "maya@example.com", phone_e164="+919812345678")
-    invite = client.post(
-        "/contacts/invite",
-        headers=auth(owner["access_token"]),
-        json={"email": "maya@example.com", "alias": "Sister"},
+    nearby = client.get(
+        "/presence/nearby?device_id=device-a-12345678&latitude=17.385&longitude=78.4867&radius_m=2000",
+        headers=headers,
     )
-    assert invite.status_code == 201
-    assert invite.json()["contact_phone_e164"] is None
-    accepted = client.post(
-        "/contacts/accept",
-        headers=auth(contact["access_token"]),
-        json={"invite_token": invite.json()["invite_token"]},
+    assert nearby.status_code == 200, nearby.text
+    assert len(nearby.json()) == 1
+    point = nearby.json()[0]
+    assert set(point) == {"approx_distance_m", "bearing_deg", "age_seconds"}
+    assert "device_id" not in point
+    assert "owner_user_id" not in point
+
+
+def test_35_safe_nodes_only_expose_verified_active_places(client):
+    from app.models import SafeNode
+
+    user = register(client, "Asha", "asha@example.com")
+    with client.app.state.SessionLocal() as db:
+        db.add_all(
+            [
+                SafeNode(
+                    name="Verified Campus Gate",
+                    category="campus_security",
+                    latitude=17.386,
+                    longitude=78.487,
+                    verified=True,
+                    active=True,
+                ),
+                SafeNode(
+                    name="Unverified Shop",
+                    category="staffed_place",
+                    latitude=17.3855,
+                    longitude=78.487,
+                    verified=False,
+                    active=True,
+                ),
+                SafeNode(
+                    name="Disabled Node",
+                    category="hospital",
+                    latitude=17.3852,
+                    longitude=78.487,
+                    verified=True,
+                    active=False,
+                ),
+            ]
+        )
+        db.commit()
+
+    r = client.get(
+        "/safe-nodes/nearby?latitude=17.385&longitude=78.4867&radius_m=5000",
+        headers=auth(user["access_token"]),
     )
-    assert accepted.status_code == 200
-    contacts = client.get("/contacts", headers=auth(owner["access_token"])).json()
-    assert contacts[0]["contact_phone_e164"] == "+919812345678"
+    assert r.status_code == 200, r.text
+    rows = r.json()
+    assert [row["name"] for row in rows] == ["Verified Campus Gate"]
+    assert rows[0]["verified"] is True
+    assert rows[0]["approx_distance_m"] > 0
 
 
-def test_37_emergency_communication_actions_enter_signed_incident_record(client):
-    owner, _, _ = _pair(client)
-    alert = _alert(client, owner, "client-action-01").json()
-    action = client.post(
-        f"/alerts/{alert['id']}/client-actions",
-        headers=auth(owner["access_token"]),
-        json={
-            "action": "sms_fallback_prepared",
-            "metadata": {"contact_alias": "Sister", "latitude": 17.385, "longitude": 78.4867},
-        },
+def test_36_existing_alert_schema_gains_silent_mode(tmp_path):
+    import sqlite3
+    from app.db import apply_compat_migrations, build_engine
+
+    db_path = tmp_path / "pre-v15.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE alerts (
+            id VARCHAR(36) PRIMARY KEY,
+            owner_id VARCHAR(36), idempotency_key VARCHAR(100),
+            latitude FLOAT, longitude FLOAT, accuracy_m FLOAT,
+            battery_percent INTEGER, network_state VARCHAR(40), is_test BOOLEAN,
+            note TEXT, state VARCHAR(20), created_at DATETIME, updated_at DATETIME,
+            cancelled_at DATETIME, resolved_at DATETIME,
+            last_device_seen_at DATETIME, last_gps_fix_at DATETIME, last_location_sync_at DATETIME
+        );
+        INSERT INTO alerts(id, owner_id, idempotency_key, latitude, longitude, state, created_at, updated_at)
+        VALUES('a1','u1','idem',17,78,'active','2026-09-25 12:00:00','2026-09-25 12:01:00');
+        """
     )
-    assert action.status_code == 200, action.text
-    proof = client.get(f"/alerts/{alert['id']}/proof", headers=auth(owner["access_token"])).json()
-    assert any(e["event_type"] == "SMS_FALLBACK_PREPARED" for e in proof["events"])
-    verified = client.get(f"/alerts/{alert['id']}/proof/verify", headers=auth(owner["access_token"])).json()
-    assert verified["valid"] is True
+    conn.commit(); conn.close()
 
-
-def test_38_health_reports_resilient_commute_capabilities(client):
-    health = client.get("/health")
-    assert health.status_code == 200
-    body = health.json()
-    assert body["version"] == "1.6.0"
-    assert body["sms_fallback"] == "system-composer"
-    assert body["offline_journal"] == "sqlite"
+    engine = build_engine(str(db_path))
+    apply_compat_migrations(engine)
+    conn = sqlite3.connect(db_path)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(alerts)")}
+    value = conn.execute("SELECT silent_mode FROM alerts WHERE id='a1'").fetchone()[0]
+    conn.close()
+    assert "silent_mode" in cols
+    assert value == 0

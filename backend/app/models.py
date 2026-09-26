@@ -35,7 +35,6 @@ class User(Base):
     name: Mapped[str] = mapped_column(String(80))
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     phone_e164: Mapped[str | None] = mapped_column(String(16), nullable=True)
-    role: Mapped[str] = mapped_column(String(24), default="traveler", index=True)
     password_hash: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -68,6 +67,7 @@ class Alert(Base):
     battery_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
     network_state: Mapped[str | None] = mapped_column(String(40), nullable=True)
     is_test: Mapped[bool] = mapped_column(Boolean, default=False)
+    silent_mode: Mapped[bool] = mapped_column(Boolean, default=False)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     state: Mapped[str] = mapped_column(String(20), default=AlertState.active.value, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -120,6 +120,44 @@ class AlertLocation(Base):
     alert: Mapped[Alert] = relationship(back_populates="locations")
 
 
+class SafetyPresenceDevice(Base):
+    """Anonymous per-installation presence used by the Safety Map.
+
+    Nearby APIs never return device_id, user identity, phone number, email, or
+    exact coordinates. Coordinates are coarsened before persistence.
+    """
+
+    __tablename__ = "safety_presence_devices"
+
+    device_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    owner_user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    coarse_latitude: Mapped[float] = mapped_column(Float)
+    coarse_longitude: Mapped[float] = mapped_column(Float)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class SafeNode(Base):
+    """Operator-configured physical place that can provide human help.
+
+    ViraNari never auto-verifies a location. Operators add real nodes using
+    manage_safe_nodes.py after checking the place and coordinates.
+    """
+
+    __tablename__ = "safe_nodes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    name: Mapped[str] = mapped_column(String(120), index=True)
+    category: Mapped[str] = mapped_column(String(40), index=True)
+    latitude: Mapped[float] = mapped_column(Float)
+    longitude: Mapped[float] = mapped_column(Float)
+    phone_e164: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    address: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    verified: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class AuditEvent(Base):
     __tablename__ = "audit_events"
 
@@ -128,55 +166,4 @@ class AuditEvent(Base):
     event_type: Mapped[str] = mapped_column(String(60), index=True)
     resource_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     detail: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
-
-
-class ResponderProfile(Base):
-    __tablename__ = "responder_profiles"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True)
-    organization_name: Mapped[str] = mapped_column(String(120))
-    category: Mapped[str] = mapped_column(String(50), default="security")
-    verification_status: Mapped[str] = mapped_column(String(20), default="verified", index=True)
-    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    is_available: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
-    service_radius_m: Mapped[int] = mapped_column(Integer, default=3000)
-    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
-    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
-    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-
-
-class ResponderAssignment(Base):
-    __tablename__ = "responder_assignments"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    alert_id: Mapped[str] = mapped_column(ForeignKey("alerts.id", ondelete="CASCADE"), index=True)
-    responder_profile_id: Mapped[str] = mapped_column(ForeignKey("responder_profiles.id", ondelete="CASCADE"), index=True)
-    state: Mapped[str] = mapped_column(String(20), default="offered", index=True)
-    distance_m: Mapped[float] = mapped_column(Float)
-    offered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    arrived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    declined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
-class IncidentEvent(Base):
-    __tablename__ = "incident_events"
-    __table_args__ = (UniqueConstraint("alert_id", "sequence", name="uq_incident_event_sequence"),)
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    alert_id: Mapped[str] = mapped_column(ForeignKey("alerts.id", ondelete="CASCADE"), index=True)
-    sequence: Mapped[int] = mapped_column(Integer, index=True)
-    event_type: Mapped[str] = mapped_column(String(80), index=True)
-    actor_type: Mapped[str] = mapped_column(String(32), default="system")
-    actor_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
-    payload_json: Mapped[str] = mapped_column(Text)
-    previous_hash: Mapped[str] = mapped_column(String(64))
-    event_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    signature: Mapped[str] = mapped_column(Text)
-    key_id: Mapped[str] = mapped_column(String(32), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)

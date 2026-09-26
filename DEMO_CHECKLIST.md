@@ -1,34 +1,44 @@
-# ViraNari V1.6.0 Demo Checklist
+# ViraNari V1.5 Demo Checklist
 
 ## Before demo
-- Backend `/health` reports `1.6.0`.
-- Traveler has a phone number configured in Circle.
-- Trusted contact has accepted the Circle invitation and has a phone number configured.
-- Open Circle once online so the accepted contact phone number is cached.
-- Location permission: precise + background/all-the-time where available.
-- Battery optimization disabled for the demo device.
+- [ ] VPS `/health` says `1.5.0`.
+- [ ] HTTPS/API URL works from both phones.
+- [ ] Location = precise on both test phones.
+- [ ] Battery optimization is relaxed for the sender during the live-tracking demo.
+- [ ] Phone A and Phone B are signed in.
+- [ ] Trusted Circle is accepted.
+- [ ] At least one REAL demo Safe Node near the venue is configured and marked verified.
 
-## Core V1.4.4 regression
-- Start SOS with hold gesture.
-- Receiver sees Emergency Inbox.
-- Move and verify coordinates change.
-- Open the full live-location timeline and confirm multiple records are shown.
-- Lock sender screen and verify tracking continues.
+## Demo 1 — Silent Safety Session
+- [ ] Receiver opens Inbox.
+- [ ] Sender long-presses the ViraNari shield logo.
+- [ ] Sender feels two haptic pulses.
+- [ ] Sender does not get the obvious red emergency presentation.
+- [ ] Receiver sees SILENT SOS.
+- [ ] Receiver taps Live Track and sees the sender's latest position.
+- [ ] Sender holds shield again / holds SOS to reveal emergency controls.
+- [ ] Sender marks “I'm safe”.
 
-## Communication resilience
-- Tap Call trusted and choose a contact if multiple are available.
-- Disable mobile data while keeping cellular service on.
-- Tap SMS fallback; Messages should open with GPS/time/accuracy/battery prefilled.
-- While API is unavailable, confirm GPS journal queued count grows.
-- Restore internet and verify queued location points replay into the timeline.
+## Demo 2 — Safety Map
+- [ ] Open Safety Map on Phone A and B.
+- [ ] Enable anonymous presence on both phones.
+- [ ] Wait 10–20 seconds.
+- [ ] Pink anonymous dot appears on each phone.
+- [ ] Tap the dot and show that only approximate distance/age is exposed.
+- [ ] Explain that exact identities/coordinates are not returned.
 
-## Verified Help (optional demo)
-- Use only if a real/demo verified responder profile has been configured.
-- Responder accepts, marks arrived, and completes.
-- Explain that this feature is optional and depends on an enrolled institution/responder network.
+## Demo 3 — Safety Compass
+- [ ] Open Compass.
+- [ ] Verified Safe Node appears.
+- [ ] Rotate phone: arrow changes relative direction.
+- [ ] Walk a short distance: distance changes.
+- [ ] Open map for the node.
 
-## Incident record
-- History → Incident record.
-- Show human-readable emergency actions.
-- Show integrity verification as valid.
-- Be precise: SMS event means the composer was prepared/opened, not that delivery was proven.
+## Demo 4 — Existing emergency tracking
+- [ ] Normal SOS from Phone A.
+- [ ] Phone B receives it.
+- [ ] Open Live Track.
+- [ ] Walk with Phone A: route/marker changes.
+- [ ] Lock sender screen and confirm heartbeat/GPS continue.
+- [ ] Disable sender data briefly: last known position remains.
+- [ ] Restore data: queued positions reconcile and status returns LIVE.

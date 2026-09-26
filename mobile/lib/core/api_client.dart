@@ -233,49 +233,42 @@ class ApiClient {
 
   Future<void> acknowledge(String alertId) async => _post('/alerts/$alertId/acknowledge', const {});
 
-  Future<void> recordClientAction(String alertId, String action, Map<String, dynamic> metadata) async =>
-      _post('/alerts/$alertId/client-actions', {'action': action, 'metadata': metadata});
-
-  Future<ProofChain> proofChain(String alertId) async =>
-      ProofChain.fromJson(await _get('/alerts/$alertId/proof') as Map<String, dynamic>);
-
-  Future<ProofVerification> verifyProof(String alertId) async =>
-      ProofVerification.fromJson(await _get('/alerts/$alertId/proof/verify') as Map<String, dynamic>);
-
-  Future<AlertRecord> rematchSafeReach(String alertId) async =>
-      AlertRecord.fromJson(await _post('/alerts/$alertId/safe-reach/rematch', const {}));
-
-  Future<ResponderProfile> responderMe() async =>
-      ResponderProfile.fromJson(await _get('/responders/me') as Map<String, dynamic>);
-
-  Future<ResponderProfile> updateResponderStatus({
+  Future<void> updatePresence({
+    required String deviceId,
     required double latitude,
     required double longitude,
-    required bool isAvailable,
-    int? serviceRadiusM,
-  }) async =>
-      ResponderProfile.fromJson(await _patch('/responders/me/status', {
-        'latitude': latitude,
-        'longitude': longitude,
-        'is_available': isAvailable,
-        'service_radius_m': serviceRadiusM,
-      }));
+    bool enabled = true,
+  }) async {
+    await _post('/presence', {
+      'device_id': deviceId,
+      'latitude': latitude,
+      'longitude': longitude,
+      'enabled': enabled,
+    });
+  }
 
-  Future<List<ResponderIncident>> responderIncidents() async =>
-      (await _get('/responders/incidents') as List<dynamic>)
-          .map((e) => ResponderIncident.fromJson(e as Map<String, dynamic>))
+  Future<void> disablePresence(String deviceId) async {
+    await _delete('/presence?device_id=${Uri.encodeQueryComponent(deviceId)}');
+  }
+
+  Future<List<PresencePoint>> nearbyPresence({
+    required String deviceId,
+    required double latitude,
+    required double longitude,
+    int radiusM = 2000,
+  }) async =>
+      (await _get('/presence/nearby?device_id=${Uri.encodeQueryComponent(deviceId)}&latitude=$latitude&longitude=$longitude&radius_m=$radiusM') as List<dynamic>)
+          .map((e) => PresencePoint.fromJson(e as Map<String, dynamic>))
           .toList();
 
-  Future<SafeReachAssignment> responderAccept(String alertId) async =>
-      SafeReachAssignment.fromJson(await _post('/responders/incidents/$alertId/accept', const {}));
-
-  Future<SafeReachAssignment> responderArrive(String alertId) async =>
-      SafeReachAssignment.fromJson(await _post('/responders/incidents/$alertId/arrive', const {}));
-
-  Future<SafeReachAssignment> responderComplete(String alertId) async =>
-      SafeReachAssignment.fromJson(await _post('/responders/incidents/$alertId/complete', const {}));
-
-  Future<SafeReachAssignment> responderDecline(String alertId) async =>
-      SafeReachAssignment.fromJson(await _post('/responders/incidents/$alertId/decline', const {}));
+  Future<List<SafeNodePoint>> nearbySafeNodes({
+    required double latitude,
+    required double longitude,
+    int radiusM = 5000,
+  }) async =>
+      (await _get('/safe-nodes/nearby?latitude=$latitude&longitude=$longitude&radius_m=$radiusM') as List<dynamic>)
+          .map((e) => SafeNodePoint.fromJson(e as Map<String, dynamic>))
+          .toList();
 
 }
+

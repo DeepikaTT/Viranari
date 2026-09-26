@@ -58,14 +58,6 @@ def apply_compat_migrations(engine) -> None:
         if "users" in tables and "phone_e164" not in columns("users"):
             conn.execute(text("ALTER TABLE users ADD COLUMN phone_e164 VARCHAR(16)"))
 
-        # V1.5 role-based responder access. Existing users remain travelers.
-        if "users" in tables:
-            user_cols = columns("users")
-            if "role" not in user_cols:
-                conn.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR(24) NOT NULL DEFAULT 'traveler'"))
-            conn.execute(text("UPDATE users SET role = 'traveler' WHERE role IS NULL OR role = ''"))
-            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_role ON users (role)"))
-
         # V1 -> V1.2 alert-session fields. Older databases may have only the
         # one-shot SOS columns, and SQLAlchemy create_all() does not ALTER them.
         if "alerts" in tables:
@@ -73,6 +65,7 @@ def apply_compat_migrations(engine) -> None:
             alert_additions = [
                 ("network_state", "VARCHAR(40)"),
                 ("is_test", "BOOLEAN NOT NULL DEFAULT 0"),
+                ("silent_mode", "BOOLEAN NOT NULL DEFAULT 0"),
                 ("state", "VARCHAR(20) NOT NULL DEFAULT 'active'"),
                 ("updated_at", "DATETIME"),
                 ("cancelled_at", "DATETIME"),
@@ -86,6 +79,7 @@ def apply_compat_migrations(engine) -> None:
             # Preserve the semantics of old records while making them valid for
             # the V1.2/V1.3 session model.
             conn.execute(text("UPDATE alerts SET is_test = 0 WHERE is_test IS NULL"))
+            conn.execute(text("UPDATE alerts SET silent_mode = 0 WHERE silent_mode IS NULL"))
             conn.execute(text(
                 "UPDATE alerts SET state = CASE "
                 "WHEN cancelled_at IS NOT NULL THEN 'cancelled' ELSE 'active' END "

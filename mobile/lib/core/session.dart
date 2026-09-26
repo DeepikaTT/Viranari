@@ -11,10 +11,15 @@ class AppSession extends ChangeNotifier {
 
   final ApiClient api;
   final SessionStore store;
+  final ValueNotifier<int> silentSosRequests = ValueNotifier<int>(0);
   UserProfile? user;
   bool initialized = false;
 
   bool get isSignedIn => user != null;
+
+  void requestSilentSos() {
+    silentSosRequests.value = silentSosRequests.value + 1;
+  }
 
   Future<void> initialize() async {
     final token = await store.readToken();
