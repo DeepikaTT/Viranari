@@ -1,7 +1,7 @@
 name: viranari_app
-description: ViraNari v1.8.5 clean Emergency Active coordination UI + proximity alerts.
+description: ViraNari v1.8.7 clean emergency actions, India 112 access, and bundled launcher icon.
 publish_to: 'none'
-version: 1.8.6+46
+version: 1.8.7+47
 
 environment:
   sdk: '>=3.13.0 <4.0.0'
@@ -26,6 +26,15 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.4
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/icon/app_icon.png
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/icon/app_icon.png"
+  remove_alpha_ios: true

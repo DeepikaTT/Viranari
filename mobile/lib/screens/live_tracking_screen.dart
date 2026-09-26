@@ -676,7 +676,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> with WidgetsBin
                           ),
                           const SizedBox(height: 5),
                           Text(
-                            'Same responder ETA is visible on the victim's Emergency Active screen.',
+                            "Same responder ETA is visible on the victim\'s Emergency Active screen.",
                             style: const TextStyle(
                               color: ViraColors.mutedPlum,
                               fontSize: 10,

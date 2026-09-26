@@ -1,6 +1,6 @@
-# ViraNari V1.8.6 — Precision Coordination
+# ViraNari V1.8.7 — Clean Emergency Actions + India 112
 
-V1.8.6 keeps the ViraNari safety network from V1.8.5 and focuses on a cleaner Emergency Active experience, more reliable responder GPS, shared ETA visibility, more honest GPS precision, and fixed Safety Map people-radius controls.
+V1.8.7 keeps the V1.8.6 safety/coordination core and simplifies Home: the diagnostic GPS/server card is removed, Open map stays, a Call 112 India Emergency action is added, and the supplied ViraNari app icon is bundled for launcher generation.
 
 ## Headline changes
 

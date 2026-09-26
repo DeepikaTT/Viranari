@@ -478,6 +478,24 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _callIndiaEmergency() async {
+    final uri = Uri(scheme: 'tel', path: '112');
+    try {
+      final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!opened && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not open the phone dialer for 112.')),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not open the phone dialer for 112.')),
+        );
+      }
+    }
+  }
+
   Future<void> _openSafetyMap() async {
     await Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => SafetyMapScreen(session: widget.session)),
@@ -769,184 +787,55 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Widget _buildLiveLocationSummary(bool active) {
     final latitude = _lastPosition?.latitude ?? _latest?.latitude;
     final longitude = _lastPosition?.longitude ?? _latest?.longitude;
-    final accuracy = _lastPosition?.accuracy ?? _latest?.accuracyM;
+    final hasLocation = latitude != null && longitude != null;
 
-    Widget statusRow({
-      required IconData icon,
-      required String label,
-      required String value,
-      required bool good,
-    }) {
-      return Padding(
-        padding: const EdgeInsets.symmetric(vertical: 3),
-        child: Row(
-          children: [
-            Container(
-              width: 28,
-              height: 28,
-              decoration: BoxDecoration(
-                color: (good ? ViraColors.success : ViraColors.warning)
-                    .withValues(alpha: .10),
-                shape: BoxShape.circle,
-              ),
-              child: Icon(
-                icon,
-                size: 17,
-                color: good ? ViraColors.success : ViraColors.warning,
+    return Row(
+      children: [
+        Expanded(
+          child: OutlinedButton.icon(
+            onPressed: hasLocation ? _openCurrentMap : null,
+            icon: const Icon(Icons.map_outlined, size: 20),
+            label: const Text(
+              'Open map',
+              style: TextStyle(fontWeight: FontWeight.w900),
+            ),
+            style: OutlinedButton.styleFrom(
+              minimumSize: const Size.fromHeight(52),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(17),
               ),
             ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                label,
-                style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 12),
-              ),
-            ),
-            Text(
-              value,
-              style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 12),
-            ),
-          ],
+          ),
         ),
-      );
-    }
-
-    return Container(
-      padding: const EdgeInsets.fromLTRB(15, 14, 15, 14),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(24),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x0A000000),
-            blurRadius: 14,
-            offset: Offset(0, 5),
-          ),
-        ],
-      ),
-      child: Column(
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                flex: 6,
-                child: Column(
-                  children: [
-                    statusRow(
-                      icon: Icons.cloud_done_rounded,
-                      label: 'Server location sync',
-                      value: _fmt(_lastServerSync),
-                      good: _lastServerSync != null && _syncError == null,
-                    ),
-                    statusRow(
-                      icon: Icons.route_rounded,
-                      label: 'Queued GPS points',
-                      value: '$_queuedLocations',
-                      good: _queuedLocations == 0,
-                    ),
-                    statusRow(
-                      icon: Icons.my_location_rounded,
-                      label: 'GPS accuracy',
-                      value: accuracy == null ? '—' : '±${accuracy.toStringAsFixed(0)} m',
-                      good: accuracy != null && accuracy < 30,
-                    ),
-                  ],
+        const SizedBox(width: 10),
+        Expanded(
+          child: FilledButton.icon(
+            onPressed: _callIndiaEmergency,
+            icon: const Icon(Icons.local_police_rounded, size: 20),
+            label: const Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Call 112',
+                  style: TextStyle(fontWeight: FontWeight.w900),
                 ),
-              ),
-              Container(
-                width: 1,
-                height: 112,
-                margin: const EdgeInsets.symmetric(horizontal: 12),
-                color: ViraColors.lilacStrong.withValues(alpha: .65),
-              ),
-              Expanded(
-                flex: 5,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Row(
-                      children: [
-                        Icon(Icons.location_on_rounded, color: ViraColors.plum, size: 22),
-                        SizedBox(width: 5),
-                        Text(
-                          'Current GPS',
-                          style: TextStyle(fontWeight: FontWeight.w900, fontSize: 12),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 5),
-                    Text(
-                      latitude == null || longitude == null
-                          ? 'Waiting for GPS…'
-                          : '${latitude.toStringAsFixed(6)},\n${longitude.toStringAsFixed(6)}',
-                      style: const TextStyle(
-                        color: ViraColors.mutedPlum,
-                        fontWeight: FontWeight.w800,
-                        fontSize: 11,
-                        height: 1.35,
-                      ),
-                    ),
-                    const SizedBox(height: 9),
-                    SizedBox(
-                      width: double.infinity,
-                      child: OutlinedButton.icon(
-                        onPressed: latitude == null || longitude == null ? null : _openCurrentMap,
-                        icon: const Icon(Icons.map_outlined, size: 18),
-                        label: const Text('Open map'),
-                      ),
-                    ),
-                  ],
+                Text(
+                  'India Emergency',
+                  style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w700),
                 ),
-              ),
-            ],
-          ),
-          if (_syncError != null) ...[
-            const SizedBox(height: 8),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                _syncError!,
-                style: const TextStyle(
-                  color: ViraColors.pinkDark,
-                  fontWeight: FontWeight.w800,
-                  fontSize: 11,
-                ),
+              ],
+            ),
+            style: FilledButton.styleFrom(
+              minimumSize: const Size.fromHeight(52),
+              backgroundColor: ViraColors.pinkDark,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(17),
               ),
             ),
-          ],
-          if (active && !_backgroundAlways) ...[
-            const SizedBox(height: 10),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
-              decoration: BoxDecoration(
-                color: const Color(0xFFEAF7F6),
-                borderRadius: BorderRadius.circular(15),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.info_outline_rounded, color: ViraColors.plum, size: 19),
-                  const SizedBox(width: 8),
-                  const Expanded(
-                    child: Text(
-                      'For strongest background tracking, enable “Allow all the time” location permission.',
-                      style: TextStyle(
-                        color: ViraColors.mutedPlum,
-                        fontSize: 10,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ),
-                  TextButton(
-                    onPressed: _location.openAppSettings,
-                    child: const Text('Settings'),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ],
-      ),
+          ),
+        ),
+      ],
     );
   }
 

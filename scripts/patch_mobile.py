@@ -251,4 +251,4 @@ if plist.exists():
         text = text.replace('</dict>', ''.join(additions) + '</dict>', 1)
         plist.write_text(text)
 
-print('Mobile platform files patched for ViraNari v1.8.5 clean Emergency Active + SOS/proximity notifications.')
+print('Mobile platform files patched for ViraNari v1.8.7 clean emergency actions + SOS/proximity notifications.')
